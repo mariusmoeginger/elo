@@ -82,8 +82,16 @@ st.title("🎯 Dart Vereins-Rangliste")
 # ======================
 def lade_spieler():
     if SPIELER_DATEI.exists():
-        return pd.read_csv(SPIELER_DATEI)
-    return pd.DataFrame(columns=["Spieler", "Punkte"])
+        df = pd.read_csv(SPIELER_DATEI)
+    else:
+        df = pd.DataFrame(columns=["Spieler", "Punkte"])
+    # Absicherung Spalten
+    if "Punkte" not in df.columns:
+        df["Punkte"] = 1000
+    if "Spieler" not in df.columns:
+        st.error("Spieler CSV hat keine 'Spieler' Spalte. Bitte prüfen!")
+        st.stop()
+    return df
 
 def lade_spiele():
     if SPIELE_DATEI.exists():
@@ -181,9 +189,11 @@ if menu == "Rangliste":
         })
 
     df = pd.DataFrame(rang)
+    if "Punkte" not in df.columns:
+        df["Punkte"] = 1000
+
     df = df.sort_values("Punkte", ascending=False).reset_index(drop=True)
     df.insert(0, "Platzierung", df.index + 1)
-
     df = df[["Platzierung", "Spieler", "Gespielte Spiele", "Punkte", "Form"]]
 
     st.subheader("🏆 Aktuelle Rangliste")
@@ -260,7 +270,6 @@ elif menu == "Spiel eintragen":
 # ======================
 elif menu == "Spielstatistiken":
     st.subheader("📊 Spiele")
-
     st.dataframe(spiele_df.sort_index(ascending=False), use_container_width=True)
 
 # ======================
@@ -268,7 +277,6 @@ elif menu == "Spielstatistiken":
 # ======================
 elif menu == "Spieler":
     st.subheader("👤 Spieler Statistik")
-
     name = st.selectbox("Spieler auswählen", spieler_df["Spieler"].tolist())
 
     spiele = spiele_df[
@@ -352,5 +360,6 @@ elif menu == "Auslosung":
 
             for i, (a, b) in enumerate(spiele, 1):
                 st.write(f"Spiel {i}: {a} vs {b}")
+
 
 
