@@ -333,13 +333,13 @@ elif "Vergangene Spiele" in menu:
 
                 save = st.form_submit_button("💾 Änderungen speichern")
                 if st.button("Spiel löschen"):
-    log_df = lade_log()  # WICHTIG: neu laden
+                    log_df = lade_log()  # WICHTIG: neu laden
 
-    log_df = log_df.drop(index_zu_loeschen)
+                    log_df = log_df.drop(index_zu_loeschen)
 
-    speichere_log(log_df)
-    st.success("Spiel gelöscht")
-    st.rerun()
+                    speichere_log(log_df)
+                    st.success("Spiel gelöscht")
+                    st.rerun()
 
                 if save:
                     df_log.at[idx, "Datum"] = spieltag
