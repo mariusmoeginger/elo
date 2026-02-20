@@ -304,8 +304,7 @@ elif "Vergangene Spiele" in menu:
                 )
 
             with col3:
-                if st.button("🛠 Bearbeiten", key=f"edit_{i}"):
-                    st.session_state.edit_index = i
+                delete = st.form_submit_button("🗑 Spiel löschen")
 
     # ---------------------
     # BEARBEITUNGS-SCREEN
