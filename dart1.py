@@ -273,13 +273,20 @@ elif "Vergangene Spiele" in menu:
 
     df_log = lade_log()
 
+    # Falls edit_index noch nicht existiert
+    if "edit_index" not in st.session_state:
+        st.session_state.edit_index = None
+
     if df_log.empty:
         st.info("Noch keine Spiele eingetragen.")
     else:
+
+        # ---------------------
+        # LISTE DER SPIELE
+        # ---------------------
         for i, row in df_log.iterrows():
             col1, col2, col3 = st.columns([5, 2, 1])
 
-            # Formatierungsfunktion für Elo-Veränderung
             def fmt_elo(v):
                 v = int(v)
                 if v > 0:
@@ -293,8 +300,7 @@ elif "Vergangene Spiele" in menu:
                 st.markdown(
                     f"**Spieltag {row['Datum']}** — "
                     f"{row['Spieler A']} {row['Legs A']}:{row['Legs B']} {row['Spieler B']} "
-                    f"(Avg {row['Avg A']} / {row['Avg B']})",
-                    unsafe_allow_html=True
+                    f"(Avg {row['Avg A']} / {row['Avg B']})"
                 )
 
             with col2:
@@ -304,43 +310,84 @@ elif "Vergangene Spiele" in menu:
                 )
 
             with col3:
-                delete = st.form_submit_button("🗑 Spiel löschen")
-
-    # ---------------------
-    # BEARBEITUNGS-SCREEN
-    # ---------------------
-    if st.session_state.edit_index is not None:
-        st.markdown("---")
-        st.subheader("🛠 Spiel bearbeiten")
-
-        pw = st.text_input("Admin-Passwort", type="password")
-
-        if pw == PASSWORT:
-            idx = st.session_state.edit_index
-            row = df_log.loc[idx]
-
-            spieler = list(lade_spieler().index)
-
-            with st.form("edit_form"):
-                a = st.selectbox("Spieler A", spieler, index=spieler.index(row["Spieler A"]))
-                b = st.selectbox("Spieler B", spieler, index=spieler.index(row["Spieler B"]))
-                la = st.number_input("Legs A", min_value=0, step=1, value=int(row["Legs A"]))
-                lb = st.number_input("Legs B", min_value=0, step=1, value=int(row["Legs B"]))
-                avga = st.number_input("Average A", min_value=0.0, step=0.1, value=float(row["Avg A"]))
-                avgb = st.number_input("Average B", min_value=0.0, step=0.1, value=float(row["Avg B"]))
-                spieltag = st.text_input("Spieltag", value=str(row["Datum"]))
-
-                save = st.form_submit_button("💾 Änderungen speichern")
-                if st.button("Spiel löschen"):
-                    log_df = lade_log()  # WICHTIG: neu laden
-
-                    log_df = log_df.drop(index_zu_loeschen)
-
-                    speichere_log(log_df)
-                    st.success("Spiel gelöscht")
+                if st.button("🛠", key=f"edit_{i}"):
+                    st.session_state.edit_index = i
                     st.rerun()
 
+        # ---------------------
+        # BEARBEITUNG
+        # ---------------------
+        if st.session_state.edit_index is not None:
+
+            st.markdown("---")
+            st.subheader("🛠 Spiel bearbeiten")
+
+            idx = st.session_state.edit_index
+            df_log = lade_log()  # FRISCH LADEN (Cloud-Schutz)
+            row = df_log.loc[idx]
+
+            pw = st.text_input("Admin-Passwort", type="password")
+
+            if pw == PASSWORT:
+
+                spieler = list(lade_spieler().index)
+
+                with st.form("edit_form"):
+
+                    a = st.selectbox(
+                        "Spieler A",
+                        spieler,
+                        index=spieler.index(row["Spieler A"])
+                    )
+
+                    b = st.selectbox(
+                        "Spieler B",
+                        spieler,
+                        index=spieler.index(row["Spieler B"])
+                    )
+
+                    la = st.number_input(
+                        "Legs A",
+                        min_value=0,
+                        step=1,
+                        value=int(row["Legs A"])
+                    )
+
+                    lb = st.number_input(
+                        "Legs B",
+                        min_value=0,
+                        step=1,
+                        value=int(row["Legs B"])
+                    )
+
+                    avga = st.number_input(
+                        "Average A",
+                        min_value=0.0,
+                        step=0.1,
+                        value=float(row["Avg A"])
+                    )
+
+                    avgb = st.number_input(
+                        "Average B",
+                        min_value=0.0,
+                        step=0.1,
+                        value=float(row["Avg B"])
+                    )
+
+                    spieltag = st.text_input(
+                        "Spieltag",
+                        value=str(row["Datum"])
+                    )
+
+                    save = st.form_submit_button("💾 Änderungen speichern")
+                    delete = st.form_submit_button("🗑 Spiel löschen")
+
+                # ---------------------
+                # SPEICHERN
+                # ---------------------
                 if save:
+                    df_log = lade_log()  # FRISCH LADEN
+
                     df_log.at[idx, "Datum"] = spieltag
                     df_log.at[idx, "Spieler A"] = a
                     df_log.at[idx, "Spieler B"] = b
@@ -356,14 +403,21 @@ elif "Vergangene Spiele" in menu:
                     st.session_state.edit_index = None
                     st.rerun()
 
+                # ---------------------
+                # LÖSCHEN
+                # ---------------------
                 if delete:
+                    df_log = lade_log()  # FRISCH LADEN
+
                     df_log = df_log.drop(idx).reset_index(drop=True)
+
                     speichere_log(df_log)
                     berechne_elo_aus_log(df_log)
 
                     st.success("Spiel gelöscht!")
                     st.session_state.edit_index = None
                     st.rerun()
+
 
 # ---------------------
 # SPIELER
