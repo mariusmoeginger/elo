@@ -12,7 +12,7 @@ DATEI = "dart_elo.csv"
 LOG_DATEI = "dart_log.csv"
 START_ELO = 1000
 K_FAKTOR = 28
-PASSWORT = "test"
+PASSWORT = "bfelo"
 
 # ---------------------
 # DATEIEN LADEN/SPEICHERN
@@ -332,7 +332,14 @@ elif "Vergangene Spiele" in menu:
                 spieltag = st.text_input("Spieltag", value=str(row["Datum"]))
 
                 save = st.form_submit_button("💾 Änderungen speichern")
-                delete = st.form_submit_button("🗑 Spiel löschen")
+                if st.button("Spiel löschen"):
+    log_df = lade_log()  # WICHTIG: neu laden
+
+    log_df = log_df.drop(index_zu_loeschen)
+
+    speichere_log(log_df)
+    st.success("Spiel gelöscht")
+    st.rerun()
 
                 if save:
                     df_log.at[idx, "Datum"] = spieltag
