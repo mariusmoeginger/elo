@@ -725,7 +725,7 @@ elif "Auslosung 🎲" in menu:
         extra_spieler = st.session_state.spielplan_extra
         spieltag_nr = st.session_state.spielplan_spieltag
  
-        st.markdown(f"### 📋 Spielplan – Spieltag {spieltag_nr}")
+        st.markdown(f"### Spieltag {spieltag_nr}")
  
         if extra_spieler:
             st.info(f"⚠️ Ungerade Spieleranzahl: **{extra_spieler}** hat einen Gegner mehr.")
