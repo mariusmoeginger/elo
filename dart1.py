@@ -207,6 +207,8 @@ def mbtn(name):
     if st.sidebar.button(name, use_container_width=True):
         st.session_state.menu = name
         st.session_state.edit_index = None
+        st.session_state["sidebar_state"] = "collapsed"
+        st.rerun()
  
 menu_liste = [
     "Rangliste 🥇",
