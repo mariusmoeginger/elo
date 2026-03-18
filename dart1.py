@@ -568,41 +568,58 @@ elif "Auslosung 🎲" in menu:
     import random
  
     def auslosen(spieler, gegner):
-        if len(spieler) < gegner + 1:
-            return None
- 
-        for _ in range(5000):
-            paarungen = {s: set() for s in spieler}
- 
-            for s in spieler:
-                moeglich = [x for x in spieler if x != s and x not in paarungen[s]]
-                random.shuffle(moeglich)
- 
-                for g in moeglich:
-                    if len(paarungen[s]) < gegner and len(paarungen[g]) < gegner:
-                        paarungen[s].add(g)
-                        paarungen[g].add(s)
- 
-            if all(len(paarungen[s]) == gegner for s in spieler):
-                return paarungen
- 
+    if len(spieler) < gegner + 1:
         return None
- 
-    if st.button("🎯 Auslosung starten"):
-        if len(anwesend) < 4:
-            st.error("Mindestens 4 Spieler erforderlich.")
+
+    n = len(spieler)
+    # Prüfen ob ungerade Kombination → ein Spieler bekommt einen mehr
+    ein_extra = (n * gegner) % 2 != 0
+
+    for _ in range(5000):
+        paarungen = {s: set() for s in spieler}
+        extra_spieler = random.choice(spieler) if ein_extra else None
+
+        for s in spieler:
+            limit = gegner + 1 if s == extra_spieler else gegner
+            moeglich = [x for x in spieler if x != s and x not in paarungen[s]]
+            random.shuffle(moeglich)
+
+            for g in moeglich:
+                g_limit = gegner + 1 if g == extra_spieler else gegner
+                if len(paarungen[s]) < limit and len(paarungen[g]) < g_limit:
+                    paarungen[s].add(g)
+                    paarungen[g].add(s)
+
+        if all(
+            len(paarungen[s]) == (gegner + 1 if s == extra_spieler else gegner)
+            for s in spieler
+        ):
+            return paarungen, extra_spieler
+
+    return None, None
+
+if st.button("🎯 Auslosung starten"):
+    if len(anwesend) < 4:
+        st.error("Mindestens 4 Spieler erforderlich.")
+    else:
+        ergebnis, extra_spieler = auslosen(anwesend, gegner_anzahl)
+
+        if ergebnis is None:
+            st.error("Keine gültige Auslosung möglich – bitte andere Gegneranzahl oder Spieleranzahl wählen.")
         else:
-            ergebnis = auslosen(anwesend, gegner_anzahl)
- 
-            if ergebnis is None:
-                st.error("Keine gültige Auslosung möglich – bitte andere Gegneranzahl oder Spieleranzahl wählen.")
-            else:
-                st.success("Auslosung erfolgreich!")
- 
-                st.markdown("## 📋 Paarungen")
-                for s in sorted(ergebnis.keys()):
-                    gegner = ", ".join(sorted(ergebnis[s]))
-                    st.markdown(f"**{s}** spielt gegen: {gegner}")
+            st.success("Auslosung erfolgreich!")
+
+            if extra_spieler:
+                st.info(f"⚠️ Ungerade Spieleranzahl: **{extra_spieler}** bekommt {gegner_anzahl + 1} Gegner statt {gegner_anzahl}.")
+
+            st.markdown("## 📋 Paarungen")
+            for s in sorted(ergebnis.keys()):
+                gegner_liste = ", ".join(sorted(ergebnis[s]))
+                anzahl = len(ergebnis[s])
+                if s == extra_spieler:
+                    st.markdown(f"**{s}** spielt gegen: {gegner_liste} ⚠️ ({anzahl} Spiele)")
+                else:
+                    st.markdown(f"**{s}** spielt gegen: {gegner_liste}")
  
  
 # ---------------------
