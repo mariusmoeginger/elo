@@ -5,6 +5,7 @@ from math import pow
 from datetime import datetime
 from PIL import Image
 from supabase import create_client
+import random
  
 # ---------------------
 # KONFIGURATION
@@ -169,6 +170,67 @@ def fmt(v):
         return "<span style='color:gray'>0</span>"
  
 # ---------------------
+# SPIELPLAN ERSTELLEN
+# Verteilt Paarungen so dass kein Spieler zwei Spiele hintereinander hat
+# ---------------------
+def erstelle_spielplan(paarungen):
+    spiele = []
+    gesehen = set()
+    for s, gegner_set in paarungen.items():
+        for g in gegner_set:
+            key = tuple(sorted([s, g]))
+            if key not in gesehen:
+                gesehen.add(key)
+                spiele.append(list(key))
+ 
+    for _ in range(10000):
+        random.shuffle(spiele)
+        gueltig = True
+        zuletzt = set()
+        for spiel in spiele:
+            if zuletzt & set(spiel):
+                gueltig = False
+                break
+            zuletzt = set(spiel)
+        if gueltig:
+            return spiele
+ 
+    return spiele
+ 
+# ---------------------
+# AUSLOSUNG FUNKTION
+# ---------------------
+def auslosen(spieler, gegner):
+    if len(spieler) < gegner + 1:
+        return None, None
+ 
+    n = len(spieler)
+    ein_extra = (n * gegner) % 2 != 0
+ 
+    for _ in range(5000):
+        paarungen = {s: set() for s in spieler}
+        extra_spieler = random.choice(spieler) if ein_extra else None
+ 
+        for s in spieler:
+            limit = gegner + 1 if s == extra_spieler else gegner
+            moeglich = [x for x in spieler if x != s and x not in paarungen[s]]
+            random.shuffle(moeglich)
+ 
+            for g in moeglich:
+                g_limit = gegner + 1 if g == extra_spieler else gegner
+                if len(paarungen[s]) < limit and len(paarungen[g]) < g_limit:
+                    paarungen[s].add(g)
+                    paarungen[g].add(s)
+ 
+        if all(
+            len(paarungen[s]) == (gegner + 1 if s == extra_spieler else gegner)
+            for s in spieler
+        ):
+            return paarungen, extra_spieler
+ 
+    return None, None
+ 
+# ---------------------
 # STREAMLIT START
 # ---------------------
 st.set_page_config(
@@ -179,9 +241,18 @@ st.set_page_config(
  
 if "menu" not in st.session_state:
     st.session_state.menu = "Rangliste"
- 
 if "edit_index" not in st.session_state:
     st.session_state.edit_index = None
+if "spielplan" not in st.session_state:
+    st.session_state.spielplan = None
+if "spielplan_reihenfolge" not in st.session_state:
+    st.session_state.spielplan_reihenfolge = None
+if "spielplan_extra" not in st.session_state:
+    st.session_state.spielplan_extra = None
+if "spielplan_spieltag" not in st.session_state:
+    st.session_state.spielplan_spieltag = ""
+if "spielplan_ergebnisse" not in st.session_state:
+    st.session_state.spielplan_ergebnisse = {}
  
 # ---------------------
 # HEADER
@@ -190,11 +261,9 @@ col1, col2 = st.columns([1, 5])
 with col1:
     if os.path.exists("logo1.png"):
         st.image(Image.open("logo1.png"), width=300)
- 
 with col2:
     st.markdown("<h1 style='font-size:38px;'>Power - Ranking</h1>", unsafe_allow_html=True)
 st.markdown("------")
- 
  
 # ---------------------
 # MENÜ
@@ -255,12 +324,12 @@ if "Rangliste" in menu:
         pd.DataFrame(rows).to_html(escape=False, index=False),
         unsafe_allow_html=True
     )
-    
+ 
     st.markdown("------")
  
     st.markdown("""
     <div style="background-color:#f5f5f5; padding:15px; border-radius:10px; font-size:16px;">
-    <h2 style='font-size:28px;'>ℹ️ Erklärung</h2> 
+    <h2 style='font-size:28px;'>ℹ️ Erklärung</h2>
  
 Das **Bulls&Friends Power-Ranking** ist ein **Elo-basiertes Punktesystem**, welches die Leistung der Spieler bei jedem offiziellen Spiel bewertet. Das System zieht **Ergebnis, Differenz, Average und Rangpunkte des Gegners** in Betracht und errechnet daraus **automatisch** eine Punktzahl, welche dann Einfluss auf die persönliche Rangpunktzahl nimmt.
  
@@ -283,7 +352,7 @@ Das **Bulls&Friends Power-Ranking** ist ein **Elo-basiertes Punktesystem**, welc
 ***Zusatz:***
     Es ist nicht nachteilig, wenn Spieler nur selten teilnehmen oder **zufällig starke Gegner zugelost bekommen**.
     Das Elo-System gleicht solche Effekte langfristig aus: Spieler, die **selten spielen, behalten ihre Punkte**, Niederlagen gegen starke Spieler werden **nicht zu sehr** bestraft und jeder hat die Chance, durch gute Leistungen **aufzusteigen**.
-    
+ 
     """, unsafe_allow_html=True)
  
  
@@ -311,11 +380,9 @@ elif "Spiel eintragen" in menu:
             if submitted:
                 if a != b:
                     df, df_log = log_spiel(a, b, legs_a, legs_b, avg_a, avg_b, spieltag)
- 
                     last = df_log.iloc[-1]
                     elo_a = int(last["Elo A"])
                     elo_b = int(last["Elo B"])
- 
                     st.success(f"{a} {legs_a}:{legs_b} {b} eingetragen! (Avg: {avg_a}/{avg_b})")
                     st.markdown("### Elo-Veränderung")
                     st.markdown(f"{fmt(elo_a)} | {fmt(elo_b)}", unsafe_allow_html=True)
@@ -336,7 +403,6 @@ elif "Vergangene Spiele" in menu:
     if df_log.empty:
         st.info("Noch keine Spiele eingetragen.")
     else:
- 
         for i, row in df_log.iterrows():
             col1, col2, col3 = st.columns([5, 2, 1])
  
@@ -355,13 +421,8 @@ elif "Vergangene Spiele" in menu:
                     f"{row['Spieler A']} {row['Legs A']}:{row['Legs B']} {row['Spieler B']} "
                     f"(Avg {row['Avg A']} / {row['Avg B']})"
                 )
- 
             with col2:
-                st.markdown(
-                    f"{fmt_elo(row['Elo A'])} | {fmt_elo(row['Elo B'])}",
-                    unsafe_allow_html=True
-                )
- 
+                st.markdown(f"{fmt_elo(row['Elo A'])} | {fmt_elo(row['Elo B'])}", unsafe_allow_html=True)
             with col3:
                 row_id = int(row["id"]) if "id" in df_log.columns else i
                 if st.button("🛠", key=f"edit_{row_id}"):
@@ -369,7 +430,6 @@ elif "Vergangene Spiele" in menu:
                     st.rerun()
  
         if st.session_state.edit_index is not None:
- 
             st.markdown("---")
             st.subheader("🛠 Spiel bearbeiten")
  
@@ -384,11 +444,9 @@ elif "Vergangene Spiele" in menu:
             pw = st.text_input("Admin-Passwort", type="password")
  
             if pw == PASSWORT:
- 
                 spieler = list(lade_spieler().index)
  
                 with st.form("edit_form"):
- 
                     a = st.selectbox("Spieler A", spieler, index=spieler.index(row["Spieler A"]))
                     b = st.selectbox("Spieler B", spieler, index=spieler.index(row["Spieler B"]))
                     la = st.number_input("Legs A", min_value=0, step=1, value=int(row["Legs A"]))
@@ -402,13 +460,9 @@ elif "Vergangene Spiele" in menu:
                 if save:
                     sb = get_supabase()
                     sb.table("spiele_log").update({
-                        "datum": spieltag,
-                        "spieler_a": a,
-                        "spieler_b": b,
-                        "legs_a": int(la),
-                        "legs_b": int(lb),
-                        "avg_a": float(avga),
-                        "avg_b": float(avgb)
+                        "datum": spieltag, "spieler_a": a, "spieler_b": b,
+                        "legs_a": int(la), "legs_b": int(lb),
+                        "avg_a": float(avga), "avg_b": float(avgb)
                     }).eq("id", idx).execute()
                     berechne_elo_aus_log(lade_log())
                     st.success("Spiel aktualisiert!")
@@ -422,7 +476,6 @@ elif "Vergangene Spiele" in menu:
                     st.success("Spiel gelöscht!")
                     st.session_state.edit_index = None
                     st.rerun()
- 
  
 # ---------------------
 # SPIELER
@@ -442,15 +495,10 @@ elif "Spieler 👤" in menu:
         ((spiele["Spieler A"] == gew) & (spiele["Legs A"] > spiele["Legs B"])) |
         ((spiele["Spieler B"] == gew) & (spiele["Legs B"] > spiele["Legs A"]))
     )
- 
     niederlagen = len(spiele) - siege
  
-    leg_diff = sum(
-        spiele.apply(
-            lambda r: r["Legs A"] - r["Legs B"] if r["Spieler A"] == gew
-            else r["Legs B"] - r["Legs A"], axis=1
-        )
-    )
+    leg_diff = sum(spiele.apply(
+        lambda r: r["Legs A"] - r["Legs B"] if r["Spieler A"] == gew else r["Legs B"] - r["Legs A"], axis=1))
  
     gesamt_avg = (
         sum(spiele.apply(lambda r: r["Avg A"] if r["Spieler A"] == gew else r["Avg B"], axis=1)) / len(spiele)
@@ -496,71 +544,163 @@ elif "Auslosung 🎲" in menu:
  
     df_spieler = list(lade_spieler().index)
  
-    st.markdown("### Anwesende Spieler auswählen")
-    anwesend = st.multiselect("Spieler", df_spieler)
+    # Nur Auslosungsmaske zeigen wenn noch kein Spielplan aktiv
+    if st.session_state.spielplan is None:
+        st.markdown("### Anwesende Spieler auswählen")
+        anwesend = st.multiselect("Spieler", df_spieler)
+        gegner_anzahl = st.slider("Anzahl Gegner pro Spieler", min_value=3, max_value=5, value=4)
+        spieltag_nr = st.text_input("Spieltag-Nummer (z.B. 3)")
  
-    gegner_anzahl = st.slider(
-        "Anzahl Gegner pro Spieler",
-        min_value=3,
-        max_value=5,
-        value=4
-    )
- 
-    import random
- 
-    def auslosen(spieler, gegner):
-        if len(spieler) < gegner + 1:
-            return None, None
- 
-        n = len(spieler)
-        ein_extra = (n * gegner) % 2 != 0
- 
-        for _ in range(5000):
-            paarungen = {s: set() for s in spieler}
-            extra_spieler = random.choice(spieler) if ein_extra else None
- 
-            for s in spieler:
-                limit = gegner + 1 if s == extra_spieler else gegner
-                moeglich = [x for x in spieler if x != s and x not in paarungen[s]]
-                random.shuffle(moeglich)
- 
-                for g in moeglich:
-                    g_limit = gegner + 1 if g == extra_spieler else gegner
-                    if len(paarungen[s]) < limit and len(paarungen[g]) < g_limit:
-                        paarungen[s].add(g)
-                        paarungen[g].add(s)
- 
-            if all(
-                len(paarungen[s]) == (gegner + 1 if s == extra_spieler else gegner)
-                for s in spieler
-            ):
-                return paarungen, extra_spieler
- 
-        return None, None
- 
-    if st.button("🎯 Auslosung starten"):
-        if len(anwesend) < 4:
-            st.error("Mindestens 4 Spieler erforderlich.")
-        else:
-            ergebnis, extra_spieler = auslosen(anwesend, gegner_anzahl)
- 
-            if ergebnis is None:
-                st.error("Keine gültige Auslosung möglich – bitte andere Gegneranzahl oder Spieleranzahl wählen.")
+        if st.button("🎯 Auslosung starten"):
+            if len(anwesend) < 4:
+                st.error("Mindestens 4 Spieler erforderlich.")
+            elif spieltag_nr.strip() == "":
+                st.error("Bitte Spieltag-Nummer eingeben.")
             else:
-                st.success("Auslosung erfolgreich!")
+                ergebnis, extra_spieler = auslosen(anwesend, gegner_anzahl)
  
-                if extra_spieler:
-                    st.info(f"⚠️ Ungerade Spieleranzahl: **{extra_spieler}** bekommt {gegner_anzahl + 1} Gegner statt {gegner_anzahl}.")
+                if ergebnis is None:
+                    st.error("Keine gültige Auslosung möglich – bitte andere Gegneranzahl oder Spieleranzahl wählen.")
+                else:
+                    spielplan = erstelle_spielplan(ergebnis)
+                    st.session_state.spielplan = spielplan
+                    st.session_state.spielplan_reihenfolge = list(range(len(spielplan)))
+                    st.session_state.spielplan_extra = extra_spieler
+                    st.session_state.spielplan_spieltag = spieltag_nr.strip()
+                    st.session_state.spielplan_ergebnisse = {}
+                    st.rerun()
  
-                st.markdown("## 📋 Paarungen")
-                for s in sorted(ergebnis.keys()):
-                    gegner_liste = ", ".join(sorted(ergebnis[s]))
-                    anzahl = len(ergebnis[s])
-                    if s == extra_spieler:
-                        st.markdown(f"**{s}** spielt gegen: {gegner_liste} ⚠️ ({anzahl} Spiele)")
+    # ---------------------
+    # SPIELPLAN ANZEIGEN
+    # ---------------------
+    else:
+        spielplan = st.session_state.spielplan
+        reihenfolge = st.session_state.spielplan_reihenfolge
+        extra_spieler = st.session_state.spielplan_extra
+        spieltag_nr = st.session_state.spielplan_spieltag
+ 
+        st.markdown(f"### 📋 Spielplan – Spieltag {spieltag_nr}")
+ 
+        if extra_spieler:
+            st.info(f"⚠️ Ungerade Spieleranzahl: **{extra_spieler}** hat einen Gegner mehr.")
+ 
+        pw = st.text_input("Passwort zum Eintragen", type="password", key="pw_spielplan")
+ 
+        if pw == PASSWORT:
+            st.caption("Passe die Pos.-Nummer links an um die Spielreihenfolge zu ändern, dann 'Reihenfolge übernehmen' klicken.")
+ 
+            # Spaltenheader
+            h = st.columns([1, 3, 3, 2, 2, 2, 2])
+            h[0].markdown("**Pos.**")
+            h[1].markdown("**Spieler A**")
+            h[2].markdown("**Spieler B**")
+            h[3].markdown("**Legs A**")
+            h[4].markdown("**Legs B**")
+            h[5].markdown("**Avg A**")
+            h[6].markdown("**Avg B**")
+ 
+            ergebnisse_temp = {}
+            positionen_temp = {}
+ 
+            for anzeige_pos, orig_idx in enumerate(reihenfolge):
+                spiel = spielplan[orig_idx]
+                a, b = spiel[0], spiel[1]
+                vorher = st.session_state.spielplan_ergebnisse.get(orig_idx, {})
+                cols = st.columns([1, 3, 3, 2, 2, 2, 2])
+ 
+                with cols[0]:
+                    neue_pos = st.number_input(
+                        "", min_value=1, max_value=len(spielplan),
+                        value=anzeige_pos + 1,
+                        key=f"pos_{orig_idx}",
+                        label_visibility="collapsed"
+                    )
+                    positionen_temp[orig_idx] = neue_pos
+ 
+                with cols[1]:
+                    st.markdown(f"**{a}**")
+                with cols[2]:
+                    st.markdown(f"**{b}**")
+                with cols[3]:
+                    la = st.number_input("", min_value=0, step=1,
+                        value=vorher.get("legs_a", 0),
+                        key=f"la_{orig_idx}", label_visibility="collapsed")
+                with cols[4]:
+                    lb = st.number_input("", min_value=0, step=1,
+                        value=vorher.get("legs_b", 0),
+                        key=f"lb_{orig_idx}", label_visibility="collapsed")
+                with cols[5]:
+                    avga = st.number_input("", min_value=0.0, step=0.1,
+                        value=vorher.get("avg_a", 50.0),
+                        key=f"avga_{orig_idx}", label_visibility="collapsed")
+                with cols[6]:
+                    avgb = st.number_input("", min_value=0.0, step=0.1,
+                        value=vorher.get("avg_b", 50.0),
+                        key=f"avgb_{orig_idx}", label_visibility="collapsed")
+ 
+                ergebnisse_temp[orig_idx] = {
+                    "legs_a": la, "legs_b": lb, "avg_a": avga, "avg_b": avgb
+                }
+ 
+            st.markdown("---")
+            col_sort, col_submit, col_reset = st.columns([1, 1, 1])
+ 
+            with col_sort:
+                if st.button("🔄 Reihenfolge übernehmen"):
+                    neue_reihenfolge = sorted(positionen_temp.keys(), key=lambda x: positionen_temp[x])
+                    st.session_state.spielplan_reihenfolge = neue_reihenfolge
+                    st.session_state.spielplan_ergebnisse = ergebnisse_temp
+                    st.rerun()
+ 
+            with col_submit:
+                if st.button("✅ In Rangliste übernehmen"):
+                    unvollstaendig = []
+                    for orig_idx in reihenfolge:
+                        e = ergebnisse_temp[orig_idx]
+                        if e["legs_a"] == 0 and e["legs_b"] == 0:
+                            spiel = spielplan[orig_idx]
+                            unvollstaendig.append(f"{spiel[0]} vs {spiel[1]}")
+ 
+                    if unvollstaendig:
+                        st.warning(f"Noch keine Ergebnisse bei: {', '.join(unvollstaendig)}")
                     else:
-                        st.markdown(f"**{s}** spielt gegen: {gegner_liste}")
+                        df_log = lade_log()
+                        for orig_idx in reihenfolge:
+                            spiel = spielplan[orig_idx]
+                            a, b = spiel[0], spiel[1]
+                            e = ergebnisse_temp[orig_idx]
+                            df_log.loc[len(df_log)] = {
+                                "Datum": spieltag_nr,
+                                "Spieler A": a,
+                                "Spieler B": b,
+                                "Legs A": e["legs_a"],
+                                "Legs B": e["legs_b"],
+                                "Avg A": e["avg_a"],
+                                "Avg B": e["avg_b"],
+                                "Elo A": 0,
+                                "Elo B": 0
+                            }
  
+                        speichere_log(df_log)
+                        berechne_elo_aus_log(df_log)
+ 
+                        st.session_state.spielplan = None
+                        st.session_state.spielplan_reihenfolge = None
+                        st.session_state.spielplan_extra = None
+                        st.session_state.spielplan_spieltag = ""
+                        st.session_state.spielplan_ergebnisse = {}
+ 
+                        st.success(f"✅ Spieltag {spieltag_nr} wurde in die Rangliste übernommen!")
+                        st.rerun()
+ 
+            with col_reset:
+                if st.button("🗑 Spielplan verwerfen"):
+                    st.session_state.spielplan = None
+                    st.session_state.spielplan_reihenfolge = None
+                    st.session_state.spielplan_extra = None
+                    st.session_state.spielplan_spieltag = ""
+                    st.session_state.spielplan_ergebnisse = {}
+                    st.rerun()
  
 # ---------------------
 # ADMIN
