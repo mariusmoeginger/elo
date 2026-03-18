@@ -569,7 +569,7 @@ elif "Auslosung 🎲" in menu:
  
     def auslosen(spieler, gegner):
         if len(spieler) < gegner + 1:
-        return None
+            return None
 
     n = len(spieler)
     # Prüfen ob ungerade Kombination → ein Spieler bekommt einen mehr
