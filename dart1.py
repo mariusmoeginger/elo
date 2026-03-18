@@ -733,59 +733,48 @@ elif "Auslosung 🎲" in menu:
         pw = st.text_input("Passwort zum Eintragen", type="password", key="pw_spielplan")
  
         if pw == PASSWORT:
-            st.caption("Passe die Pos.-Nummer links an um die Spielreihenfolge zu ändern, dann 'Reihenfolge übernehmen' klicken. 🗑 entfernt ein Spiel aus dem Plan.")
+            st.caption("🗑 entfernt ein Spiel aus dem Plan.")
  
             # Spaltenheader
-            h = st.columns([1, 3, 3, 2, 2, 2, 2, 1])
-            h[0].markdown("**Spiel**")
+            h = st.columns([3, 3, 2, 2, 2, 2, 1])
+            h[0].markdown("**Spieler**")
             h[1].markdown("**Spieler**")
-            h[2].markdown("**Spieler**")
+            h[2].markdown("**Legs**")
             h[3].markdown("**Legs**")
-            h[4].markdown("**Legs**")
+            h[4].markdown("**Avg**")
             h[5].markdown("**Avg**")
-            h[6].markdown("**Avg**")
-            h[7].markdown("")
+            h[6].markdown("")
  
             ergebnisse_temp = {}
-            positionen_temp = {}
             zu_loeschen = None
  
-            for anzeige_pos, orig_idx in enumerate(reihenfolge):
+            for orig_idx in reihenfolge:
                 spiel = spielplan[orig_idx]
                 a, b = spiel[0], spiel[1]
                 vorher = st.session_state.spielplan_ergebnisse.get(orig_idx, {})
-                cols = st.columns([1, 3, 3, 2, 2, 2, 2, 1])
+                cols = st.columns([3, 3, 2, 2, 2, 2, 1])
  
                 with cols[0]:
-                    neue_pos = st.number_input(
-                        "", min_value=1, max_value=len(reihenfolge),
-                        value=anzeige_pos + 1,
-                        key=f"pos_{orig_idx}",
-                        label_visibility="collapsed"
-                    )
-                    positionen_temp[orig_idx] = neue_pos
- 
-                with cols[1]:
                     st.markdown(f"**{a}**")
-                with cols[2]:
+                with cols[1]:
                     st.markdown(f"**{b}**")
-                with cols[3]:
+                with cols[2]:
                     la = st.number_input("", min_value=0, step=1,
                         value=vorher.get("legs_a", 0),
                         key=f"la_{orig_idx}", label_visibility="collapsed")
-                with cols[4]:
+                with cols[3]:
                     lb = st.number_input("", min_value=0, step=1,
                         value=vorher.get("legs_b", 0),
                         key=f"lb_{orig_idx}", label_visibility="collapsed")
-                with cols[5]:
+                with cols[4]:
                     avga = st.number_input("", min_value=0.0, step=0.1,
                         value=vorher.get("avg_a", 50.0),
                         key=f"avga_{orig_idx}", label_visibility="collapsed")
-                with cols[6]:
+                with cols[5]:
                     avgb = st.number_input("", min_value=0.0, step=0.1,
                         value=vorher.get("avg_b", 50.0),
                         key=f"avgb_{orig_idx}", label_visibility="collapsed")
-                with cols[7]:
+                with cols[6]:
                     if st.button("🗑", key=f"del_{orig_idx}"):
                         zu_loeschen = orig_idx
  
@@ -802,14 +791,7 @@ elif "Auslosung 🎲" in menu:
                 st.rerun()
  
             st.markdown("---")
-            col_sort, col_submit, col_reset = st.columns([1, 1, 1])
- 
-            with col_sort:
-                if st.button("🔄 Reihenfolge übernehmen"):
-                    neue_reihenfolge = sorted(positionen_temp.keys(), key=lambda x: positionen_temp[x])
-                    st.session_state.spielplan_reihenfolge = neue_reihenfolge
-                    st.session_state.spielplan_ergebnisse = ergebnisse_temp
-                    st.rerun()
+            col_submit, col_reset = st.columns([1, 1])
  
             with col_submit:
                 if st.button("✅ In Rangliste übernehmen"):
@@ -907,4 +889,3 @@ elif "Admin 🔐" in menu:
             df["Elo"] = preview["Neu"].round(0)
             speichere_spieler(df)
             st.success("Punkteabstände übernommen!")
- 
