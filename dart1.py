@@ -741,9 +741,7 @@ elif "Auslosung 🎲" in menu:
                 <div></div>
                 <div></div>
                 <div style='grid-column:3/5;text-align:center;font-weight:bold;text-decoration:underline;'>Legs</div>
-                <div></div>
                 <div style='grid-column:5/7;text-align:center;font-weight:bold;text-decoration:underline;'>Avg</div>
-                <div></div>
                 <div></div>
             </div>
             """, unsafe_allow_html=True)
