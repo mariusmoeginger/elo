@@ -307,7 +307,7 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
  
     # Elo-Gewinner
     with col1:
-        st.markdown("**Größte Elo-Gewinner**")
+        st.markdown("**Spieltagsgewinner**")
         medals = ["🥇", "🥈", "🥉"]
         for idx, (name, delta) in enumerate(gewinner):
             sign = f"+{delta}" if delta >= 0 else str(delta)
@@ -319,7 +319,7 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
  
     # Elo-Verlierer
     with col2:
-        st.markdown("**Größte Elo-Verlierer**")
+        st.markdown("**Spieltagsverlierer**")
         for idx, (name, delta) in enumerate(verlierer):
             st.markdown(
                 f"#{idx+1} {name} &nbsp; <span style='color:red;font-weight:bold;'>{delta}</span>",
