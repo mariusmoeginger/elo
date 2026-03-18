@@ -332,13 +332,13 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
     # Average-King
     with col3:
         if avg_king:
-            st.markdown("**Average-King**")
+            st.markdown("**Bestleistung**")
             st.markdown(f"**{avg_king[0]}** gegen {avg_king[2]}")
             st.markdown(f"<span style='font-size:28px;font-weight:bold;color:#2e7d32;'>{avg_king[1]:.1f} Avg</span>", unsafe_allow_html=True)
  
     # Größte Überraschung
     with col4:
-        st.markdown("**Größte Überraschung**")
+        st.markdown("**Überraschung des Spieltags**")
         if groesste_ueberraschung:
             gew_s, ver_s, diff, la, lb = groesste_ueberraschung
             st.markdown(f"**{gew_s}** besiegte {ver_s} ({la}:{lb})")
