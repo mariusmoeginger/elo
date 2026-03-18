@@ -736,14 +736,17 @@ elif "Auslosung 🎲" in menu:
             st.caption("🗑 entfernt ein Spiel aus dem Plan.")
  
             # Spaltenheader
-            h = st.columns([3, 3, 2, 2, 2, 2, 1])
-            h[0].markdown("**Spieler**")
-            h[1].markdown("**Spieler**")
-            h[2].markdown("**Legs**")
-            h[3].markdown("**Legs**")
-            h[4].markdown("**Avg**")
-            h[5].markdown("**Avg**")
-            h[6].markdown("")
+            st.markdown("""
+            <div style='display:grid;grid-template-columns:3fr 3fr 2fr 2fr 2fr 2fr 1fr;gap:8px;margin-bottom:4px;'>
+                <div></div>
+                <div></div>
+                <div style='grid-column:3/5;text-align:center;font-weight:bold;text-decoration:underline;'>Legs</div>
+                <div></div>
+                <div style='grid-column:5/7;text-align:center;font-weight:bold;text-decoration:underline;'>Avg</div>
+                <div></div>
+                <div></div>
+            </div>
+            """, unsafe_allow_html=True)
  
             ergebnisse_temp = {}
             zu_loeschen = None
