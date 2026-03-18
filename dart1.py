@@ -169,6 +169,15 @@ def fmt(v):
     else:
         return "<span style='color:gray'>0</span>"
  
+def fmt_elo(v):
+    v = int(v)
+    if v > 0:
+        return f"<span style='color:green'>+{v} ▲</span>"
+    elif v < 0:
+        return f"<span style='color:red'>{v} ▼</span>"
+    else:
+        return "<span style='color:gray'>0</span>"
+ 
 # ---------------------
 # SPIELPLAN ERSTELLEN
 # Verteilt Paarungen so dass kein Spieler zwei Spiele hintereinander hat
@@ -231,6 +240,127 @@ def auslosen(spieler, gegner):
     return None, None
  
 # ---------------------
+# SPIELTAG ZUSAMMENFASSUNG
+# ---------------------
+def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
+    spiele = df_log_gesamt[df_log_gesamt["Datum"].astype(str) == str(spieltag_nr)]
+    if spiele.empty:
+        st.warning("Keine Spiele für diesen Spieltag gefunden.")
+        return
+ 
+    # Elo-Veränderungen pro Spieler
+    elo_changes = {}
+    for _, row in spiele.iterrows():
+        a, b = row["Spieler A"], row["Spieler B"]
+        elo_changes[a] = elo_changes.get(a, 0) + int(row["Elo A"])
+        elo_changes[b] = elo_changes.get(b, 0) + int(row["Elo B"])
+ 
+    sorted_elo = sorted(elo_changes.items(), key=lambda x: x[1], reverse=True)
+    gewinner = sorted_elo[:3]
+    verlierer = sorted_elo[-3:][::-1]
+ 
+    # Höchster Average in einem einzelnen Spiel
+    avgs = []
+    for _, row in spiele.iterrows():
+        avgs.append((row["Spieler A"], float(row["Avg A"]), row["Spieler B"]))
+        avgs.append((row["Spieler B"], float(row["Avg B"]), row["Spieler A"]))
+    avgs.sort(key=lambda x: x[1], reverse=True)
+    avg_king = avgs[0] if avgs else None
+ 
+    # Größte Überraschung – Elo-Stand VOR diesem Spieltag berechnen
+    df_log_vorher = df_log_gesamt[df_log_gesamt["Datum"].astype(str) < str(spieltag_nr)]
+    df_elo_vorher = {}
+    for name in pd.concat([df_log_gesamt["Spieler A"], df_log_gesamt["Spieler B"]]).unique():
+        df_elo_vorher[name] = START_ELO
+    for _, row in df_log_vorher.iterrows():
+        a, b = row["Spieler A"], row["Spieler B"]
+        df_elo_vorher[a] = df_elo_vorher.get(a, START_ELO) + int(row["Elo A"])
+        df_elo_vorher[b] = df_elo_vorher.get(b, START_ELO) + int(row["Elo B"])
+ 
+    ueberraschungen = []
+    for _, row in spiele.iterrows():
+        a, b = row["Spieler A"], row["Spieler B"]
+        la, lb = int(row["Legs A"]), int(row["Legs B"])
+        if la == lb:
+            continue
+        gew_s = a if la > lb else b
+        ver_s = b if la > lb else a
+        elo_g = df_elo_vorher.get(gew_s, START_ELO)
+        elo_v = df_elo_vorher.get(ver_s, START_ELO)
+        diff = elo_v - elo_g
+        if diff > 0:
+            ueberraschungen.append((gew_s, ver_s, diff, la, lb))
+    ueberraschungen.sort(key=lambda x: x[2], reverse=True)
+    groesste_ueberraschung = ueberraschungen[0] if ueberraschungen else None
+ 
+    # ---------------------
+    # ANZEIGE
+    # ---------------------
+    st.markdown(f"""
+    <div style='background:linear-gradient(135deg,#1a1a2e,#16213e);padding:20px;border-radius:16px;margin-bottom:20px;'>
+        <h2 style='color:#e94560;text-align:center;margin:0;font-size:26px;'>🎯 Spieltag {spieltag_nr} – Zusammenfassung</h2>
+        <p style='color:#aaa;text-align:center;margin:4px 0 0 0;font-size:14px;'>{len(spiele)} Spiele ausgetragen</p>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    col1, col2 = st.columns(2)
+ 
+    with col1:
+        st.markdown("<div style='background:#0f3460;padding:16px;border-radius:12px;'>", unsafe_allow_html=True)
+        st.markdown("<h3 style='color:#f5c518;margin:0 0 12px 0;font-size:18px;'>🏆 Größte Elo-Gewinner</h3>", unsafe_allow_html=True)
+        medals = ["🥇", "🥈", "🥉"]
+        for idx, (name, delta) in enumerate(gewinner):
+            sign = f"+{delta}" if delta >= 0 else str(delta)
+            st.markdown(f"""<div style='display:flex;justify-content:space-between;align-items:center;
+                background:rgba(255,255,255,0.05);border-radius:8px;padding:8px 12px;margin-bottom:6px;'>
+                <span style='color:white;font-weight:bold;'>{medals[idx]} {name}</span>
+                <span style='color:#4ecca3;font-weight:bold;font-size:18px;'>{sign}</span>
+            </div>""", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+ 
+    with col2:
+        st.markdown("<div style='background:#3d0000;padding:16px;border-radius:12px;'>", unsafe_allow_html=True)
+        st.markdown("<h3 style='color:#ff6b6b;margin:0 0 12px 0;font-size:18px;'>📉 Größte Elo-Verlierer</h3>", unsafe_allow_html=True)
+        for idx, (name, delta) in enumerate(verlierer):
+            st.markdown(f"""<div style='display:flex;justify-content:space-between;align-items:center;
+                background:rgba(255,255,255,0.05);border-radius:8px;padding:8px 12px;margin-bottom:6px;'>
+                <span style='color:white;font-weight:bold;'>#{idx+1} {name}</span>
+                <span style='color:#ff6b6b;font-weight:bold;font-size:18px;'>{delta}</span>
+            </div>""", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+ 
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    col3, col4 = st.columns(2)
+ 
+    with col3:
+        if avg_king:
+            st.markdown(f"""<div style='background:#0d3b00;padding:16px;border-radius:12px;'>
+                <h3 style='color:#7fff00;margin:0 0 12px 0;font-size:18px;'>🎯 Average-King</h3>
+                <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:12px;'>
+                    <p style='color:white;font-size:20px;font-weight:bold;margin:0;'>🎖️ {avg_king[0]}</p>
+                    <p style='color:#aaa;margin:4px 0 0 0;font-size:13px;'>gegen {avg_king[2]}</p>
+                    <p style='color:#7fff00;font-size:28px;font-weight:bold;margin:4px 0 0 0;'>{avg_king[1]:.1f} Avg</p>
+                </div>
+            </div>""", unsafe_allow_html=True)
+ 
+    with col4:
+        if groesste_ueberraschung:
+            gew_s, ver_s, diff, la, lb = groesste_ueberraschung
+            st.markdown(f"""<div style='background:#2d0050;padding:16px;border-radius:12px;'>
+                <h3 style='color:#c77dff;margin:0 0 12px 0;font-size:18px;'>😲 Größte Überraschung</h3>
+                <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:12px;'>
+                    <p style='color:white;font-size:20px;font-weight:bold;margin:0;'>⚡ {gew_s}</p>
+                    <p style='color:#aaa;margin:4px 0 0 0;font-size:13px;'>besiegte {ver_s} ({la}:{lb})</p>
+                    <p style='color:#c77dff;font-size:16px;font-weight:bold;margin:4px 0 0 0;'>Elo-Diff. vorher: +{diff} für {ver_s}</p>
+                </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown("""<div style='background:#2d0050;padding:16px;border-radius:12px;'>
+                <h3 style='color:#c77dff;margin:0 0 12px 0;font-size:18px;'>😲 Größte Überraschung</h3>
+                <p style='color:#aaa;'>Keine Underdog-Siege in diesem Spieltag.</p>
+            </div>""", unsafe_allow_html=True)
+ 
+# ---------------------
 # STREAMLIT START
 # ---------------------
 st.set_page_config(
@@ -253,6 +383,8 @@ if "spielplan_spieltag" not in st.session_state:
     st.session_state.spielplan_spieltag = ""
 if "spielplan_ergebnisse" not in st.session_state:
     st.session_state.spielplan_ergebnisse = {}
+if "letzter_spieltag" not in st.session_state:
+    st.session_state.letzter_spieltag = None
  
 # ---------------------
 # HEADER
@@ -284,6 +416,7 @@ menu_liste = [
     "Spieler 👤",
     "Spieler anlegen ➕",
     "Auslosung 🎲",
+    "Spieltage 📊",
     "Admin 🔐"
 ]
  
@@ -406,7 +539,7 @@ elif "Vergangene Spiele" in menu:
         for i, row in df_log.iterrows():
             col1, col2, col3 = st.columns([5, 2, 1])
  
-            def fmt_elo(v):
+            def fmt_elo_local(v):
                 v = int(v)
                 if v > 0:
                     return f"<span style='color:green'>+{v} ▲</span>"
@@ -422,7 +555,7 @@ elif "Vergangene Spiele" in menu:
                     f"(Avg {row['Avg A']} / {row['Avg B']})"
                 )
             with col2:
-                st.markdown(f"{fmt_elo(row['Elo A'])} | {fmt_elo(row['Elo B'])}", unsafe_allow_html=True)
+                st.markdown(f"{fmt_elo_local(row['Elo A'])} | {fmt_elo_local(row['Elo B'])}", unsafe_allow_html=True)
             with col3:
                 row_id = int(row["id"]) if "id" in df_log.columns else i
                 if st.button("🛠", key=f"edit_{row_id}"):
@@ -587,10 +720,10 @@ elif "Auslosung 🎲" in menu:
         pw = st.text_input("Passwort zum Eintragen", type="password", key="pw_spielplan")
  
         if pw == PASSWORT:
-            st.caption("Passe die Pos.-Nummer links an um die Spielreihenfolge zu ändern, dann 'Reihenfolge übernehmen' klicken.")
+            st.caption("Passe die Pos.-Nummer links an um die Spielreihenfolge zu ändern, dann 'Reihenfolge übernehmen' klicken. 🗑 entfernt ein Spiel aus dem Plan.")
  
             # Spaltenheader
-            h = st.columns([1, 3, 3, 2, 2, 2, 2])
+            h = st.columns([1, 3, 3, 2, 2, 2, 2, 1])
             h[0].markdown("**Spiel**")
             h[1].markdown("**Spieler**")
             h[2].markdown("**Spieler**")
@@ -598,19 +731,21 @@ elif "Auslosung 🎲" in menu:
             h[4].markdown("**Legs**")
             h[5].markdown("**Avg**")
             h[6].markdown("**Avg**")
+            h[7].markdown("")
  
             ergebnisse_temp = {}
             positionen_temp = {}
+            zu_loeschen = None
  
             for anzeige_pos, orig_idx in enumerate(reihenfolge):
                 spiel = spielplan[orig_idx]
                 a, b = spiel[0], spiel[1]
                 vorher = st.session_state.spielplan_ergebnisse.get(orig_idx, {})
-                cols = st.columns([1, 3, 3, 2, 2, 2, 2])
+                cols = st.columns([1, 3, 3, 2, 2, 2, 2, 1])
  
                 with cols[0]:
                     neue_pos = st.number_input(
-                        "", min_value=1, max_value=len(spielplan),
+                        "", min_value=1, max_value=len(reihenfolge),
                         value=anzeige_pos + 1,
                         key=f"pos_{orig_idx}",
                         label_visibility="collapsed"
@@ -637,10 +772,21 @@ elif "Auslosung 🎲" in menu:
                     avgb = st.number_input("", min_value=0.0, step=0.1,
                         value=vorher.get("avg_b", 50.0),
                         key=f"avgb_{orig_idx}", label_visibility="collapsed")
+                with cols[7]:
+                    if st.button("🗑", key=f"del_{orig_idx}"):
+                        zu_loeschen = orig_idx
  
                 ergebnisse_temp[orig_idx] = {
                     "legs_a": la, "legs_b": lb, "avg_a": avga, "avg_b": avgb
                 }
+ 
+            # Spiel löschen
+            if zu_loeschen is not None:
+                neue_reihenfolge = [x for x in reihenfolge if x != zu_loeschen]
+                neue_ergebnisse = {k: v for k, v in ergebnisse_temp.items() if k != zu_loeschen}
+                st.session_state.spielplan_reihenfolge = neue_reihenfolge
+                st.session_state.spielplan_ergebnisse = neue_ergebnisse
+                st.rerun()
  
             st.markdown("---")
             col_sort, col_submit, col_reset = st.columns([1, 1, 1])
@@ -684,6 +830,7 @@ elif "Auslosung 🎲" in menu:
                         speichere_log(df_log)
                         berechne_elo_aus_log(df_log)
  
+                        st.session_state.letzter_spieltag = spieltag_nr
                         st.session_state.spielplan = None
                         st.session_state.spielplan_reihenfolge = None
                         st.session_state.spielplan_extra = None
@@ -691,7 +838,9 @@ elif "Auslosung 🎲" in menu:
                         st.session_state.spielplan_ergebnisse = {}
  
                         st.success(f"✅ Spieltag {spieltag_nr} wurde in die Rangliste übernommen!")
-                        st.rerun()
+ 
+                        with st.expander("🏆 Spieltag-Zusammenfassung", expanded=True):
+                            zeige_spieltag_zusammenfassung(spieltag_nr, lade_log())
  
             with col_reset:
                 if st.button("🗑 Spielplan verwerfen"):
@@ -701,6 +850,41 @@ elif "Auslosung 🎲" in menu:
                     st.session_state.spielplan_spieltag = ""
                     st.session_state.spielplan_ergebnisse = {}
                     st.rerun()
+ 
+# ---------------------
+# SPIELTAGE
+# ---------------------
+elif "Spieltage 📊" in menu:
+    st.subheader("📊 Spieltags-Übersicht")
+ 
+    df_log = lade_log()
+ 
+    if df_log.empty:
+        st.info("Noch keine Spiele eingetragen.")
+    else:
+        spieltage = sorted(df_log["Datum"].astype(str).unique(), key=lambda x: (len(x), x))
+ 
+        ausgewaehlter_spieltag = st.selectbox(
+            "Spieltag auswählen",
+            spieltage,
+            index=len(spieltage) - 1,
+            format_func=lambda x: f"Spieltag {x}"
+        )
+ 
+        zeige_spieltag_zusammenfassung(ausgewaehlter_spieltag, df_log)
+ 
+        st.markdown("---")
+        st.markdown(f"#### Alle Spiele – Spieltag {ausgewaehlter_spieltag}")
+        spiele_st = df_log[df_log["Datum"].astype(str) == str(ausgewaehlter_spieltag)]
+        for _, row in spiele_st.iterrows():
+            c1, c2 = st.columns([5, 2])
+            with c1:
+                st.markdown(
+                    f"{row['Spieler A']} **{row['Legs A']}:{row['Legs B']}** {row['Spieler B']} "
+                    f"(Avg {row['Avg A']} / {row['Avg B']})"
+                )
+            with c2:
+                st.markdown(f"{fmt_elo(row['Elo A'])} | {fmt_elo(row['Elo B'])}", unsafe_allow_html=True)
  
 # ---------------------
 # ADMIN
@@ -726,7 +910,3 @@ elif "Admin 🔐" in menu:
             speichere_spieler(df)
             st.success("Punkteabstände übernommen!")
  
-
-
-
-
