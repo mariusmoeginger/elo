@@ -298,67 +298,53 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
     # ---------------------
     st.markdown(f"""
     <div style='background:linear-gradient(135deg,#1a1a2e,#16213e);padding:20px;border-radius:16px;margin-bottom:20px;'>
-        <h2 style='color:#e94560;text-align:center;margin:0;font-size:26px;'>🎯 Spieltag {spieltag_nr} – Zusammenfassung</h2>
+        <h2 style='color:#e94560;text-align:center;margin:0;font-size:26px;'>Spieltag {spieltag_nr} &ndash; Zusammenfassung</h2>
         <p style='color:#aaa;text-align:center;margin:4px 0 0 0;font-size:14px;'>{len(spiele)} Spiele ausgetragen</p>
     </div>
     """, unsafe_allow_html=True)
  
     col1, col2 = st.columns(2)
  
+    # Elo-Gewinner
     with col1:
-        st.markdown("<div style='background:#0f3460;padding:16px;border-radius:12px;'>", unsafe_allow_html=True)
-        st.markdown("<h3 style='color:#f5c518;margin:0 0 12px 0;font-size:18px;'>🏆 Größte Elo-Gewinner</h3>", unsafe_allow_html=True)
+        st.markdown("**Größte Elo-Gewinner**")
         medals = ["🥇", "🥈", "🥉"]
         for idx, (name, delta) in enumerate(gewinner):
             sign = f"+{delta}" if delta >= 0 else str(delta)
-            st.markdown(f"""<div style='display:flex;justify-content:space-between;align-items:center;
-                background:rgba(255,255,255,0.05);border-radius:8px;padding:8px 12px;margin-bottom:6px;'>
-                <span style='color:white;font-weight:bold;'>{medals[idx]} {name}</span>
-                <span style='color:#4ecca3;font-weight:bold;font-size:18px;'>{sign}</span>
-            </div>""", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+            color = "green" if delta >= 0 else "red"
+            st.markdown(
+                f"{medals[idx]} {name} &nbsp; <span style='color:{color};font-weight:bold;'>{sign}</span>",
+                unsafe_allow_html=True
+            )
  
+    # Elo-Verlierer
     with col2:
-        st.markdown("<div style='background:#3d0000;padding:16px;border-radius:12px;'>", unsafe_allow_html=True)
-        st.markdown("<h3 style='color:#ff6b6b;margin:0 0 12px 0;font-size:18px;'>📉 Größte Elo-Verlierer</h3>", unsafe_allow_html=True)
+        st.markdown("**Größte Elo-Verlierer**")
         for idx, (name, delta) in enumerate(verlierer):
-            st.markdown(f"""<div style='display:flex;justify-content:space-between;align-items:center;
-                background:rgba(255,255,255,0.05);border-radius:8px;padding:8px 12px;margin-bottom:6px;'>
-                <span style='color:white;font-weight:bold;'>#{idx+1} {name}</span>
-                <span style='color:#ff6b6b;font-weight:bold;font-size:18px;'>{delta}</span>
-            </div>""", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"#{idx+1} {name} &nbsp; <span style='color:red;font-weight:bold;'>{delta}</span>",
+                unsafe_allow_html=True
+            )
  
-    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    st.markdown("---")
     col3, col4 = st.columns(2)
  
+    # Average-King
     with col3:
         if avg_king:
-            st.markdown(f"""<div style='background:#0d3b00;padding:16px;border-radius:12px;'>
-                <h3 style='color:#7fff00;margin:0 0 12px 0;font-size:18px;'>🎯 Average-King</h3>
-                <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:12px;'>
-                    <p style='color:white;font-size:20px;font-weight:bold;margin:0;'>🎖️ {avg_king[0]}</p>
-                    <p style='color:#aaa;margin:4px 0 0 0;font-size:13px;'>gegen {avg_king[2]}</p>
-                    <p style='color:#7fff00;font-size:28px;font-weight:bold;margin:4px 0 0 0;'>{avg_king[1]:.1f} Avg</p>
-                </div>
-            </div>""", unsafe_allow_html=True)
+            st.markdown("**Average-King**")
+            st.markdown(f"**{avg_king[0]}** gegen {avg_king[2]}")
+            st.markdown(f"<span style='font-size:28px;font-weight:bold;color:#2e7d32;'>{avg_king[1]:.1f} Avg</span>", unsafe_allow_html=True)
  
+    # Größte Überraschung
     with col4:
+        st.markdown("**Größte Überraschung**")
         if groesste_ueberraschung:
             gew_s, ver_s, diff, la, lb = groesste_ueberraschung
-            st.markdown(f"""<div style='background:#2d0050;padding:16px;border-radius:12px;'>
-                <h3 style='color:#c77dff;margin:0 0 12px 0;font-size:18px;'>😲 Größte Überraschung</h3>
-                <div style='background:rgba(255,255,255,0.05);border-radius:8px;padding:12px;'>
-                    <p style='color:white;font-size:20px;font-weight:bold;margin:0;'>⚡ {gew_s}</p>
-                    <p style='color:#aaa;margin:4px 0 0 0;font-size:13px;'>besiegte {ver_s} ({la}:{lb})</p>
-                    <p style='color:#c77dff;font-size:16px;font-weight:bold;margin:4px 0 0 0;'>Elo-Diff. vorher: +{diff} für {ver_s}</p>
-                </div>
-            </div>""", unsafe_allow_html=True)
+            st.markdown(f"**{gew_s}** besiegte {ver_s} ({la}:{lb})")
+            st.markdown(f"<span style='color:#6a1b9a;font-weight:bold;'>Elo-Differenz vorher: +{diff} für {ver_s}</span>", unsafe_allow_html=True)
         else:
-            st.markdown("""<div style='background:#2d0050;padding:16px;border-radius:12px;'>
-                <h3 style='color:#c77dff;margin:0 0 12px 0;font-size:18px;'>😲 Größte Überraschung</h3>
-                <p style='color:#aaa;'>Keine Underdog-Siege in diesem Spieltag.</p>
-            </div>""", unsafe_allow_html=True)
+            st.markdown("Keine Underdog-Siege in diesem Spieltag.")
  
 # ---------------------
 # STREAMLIT START
@@ -385,6 +371,10 @@ if "spielplan_ergebnisse" not in st.session_state:
     st.session_state.spielplan_ergebnisse = {}
 if "letzter_spieltag" not in st.session_state:
     st.session_state.letzter_spieltag = None
+if "zeige_zusammenfassung" not in st.session_state:
+    st.session_state.zeige_zusammenfassung = False
+if "zusammenfassung_spieltag" not in st.session_state:
+    st.session_state.zusammenfassung_spieltag = None
  
 # ---------------------
 # HEADER
@@ -679,29 +669,42 @@ elif "Auslosung 🎲" in menu:
  
     # Nur Auslosungsmaske zeigen wenn noch kein Spielplan aktiv
     if st.session_state.spielplan is None:
-        st.markdown("### Anwesende Spieler auswählen")
-        anwesend = st.multiselect("Spieler", df_spieler)
-        gegner_anzahl = st.slider("Anzahl Gegner pro Spieler", min_value=3, max_value=5, value=4)
-        spieltag_nr = st.text_input("Spieltag-Nummer (z.B. 3)")
  
-        if st.button("🎯 Auslosung starten"):
-            if len(anwesend) < 4:
-                st.error("Mindestens 4 Spieler erforderlich.")
-            elif spieltag_nr.strip() == "":
-                st.error("Bitte Spieltag-Nummer eingeben.")
-            else:
-                ergebnis, extra_spieler = auslosen(anwesend, gegner_anzahl)
+        # Zusammenfassung nach Übernehmen anzeigen
+        if st.session_state.zeige_zusammenfassung and st.session_state.zusammenfassung_spieltag:
+            st.success(f"✅ Spieltag {st.session_state.zusammenfassung_spieltag} wurde in die Rangliste übernommen!")
+            st.markdown("---")
+            st.markdown(f"### Spieltag {st.session_state.zusammenfassung_spieltag} – Zusammenfassung")
+            zeige_spieltag_zusammenfassung(st.session_state.zusammenfassung_spieltag, lade_log())
+            st.markdown("---")
+            if st.button("Neue Auslosung starten"):
+                st.session_state.zeige_zusammenfassung = False
+                st.session_state.zusammenfassung_spieltag = None
+                st.rerun()
+        else:
+            st.markdown("### Anwesende Spieler auswählen")
+            anwesend = st.multiselect("Spieler", df_spieler)
+            gegner_anzahl = st.slider("Anzahl Gegner pro Spieler", min_value=3, max_value=5, value=4)
+            spieltag_nr = st.text_input("Spieltag-Nummer (z.B. 3)")
  
-                if ergebnis is None:
-                    st.error("Keine gültige Auslosung möglich – bitte andere Gegneranzahl oder Spieleranzahl wählen.")
+            if st.button("🎯 Auslosung starten"):
+                if len(anwesend) < 4:
+                    st.error("Mindestens 4 Spieler erforderlich.")
+                elif spieltag_nr.strip() == "":
+                    st.error("Bitte Spieltag-Nummer eingeben.")
                 else:
-                    spielplan = erstelle_spielplan(ergebnis)
-                    st.session_state.spielplan = spielplan
-                    st.session_state.spielplan_reihenfolge = list(range(len(spielplan)))
-                    st.session_state.spielplan_extra = extra_spieler
-                    st.session_state.spielplan_spieltag = spieltag_nr.strip()
-                    st.session_state.spielplan_ergebnisse = {}
-                    st.rerun()
+                    ergebnis, extra_spieler = auslosen(anwesend, gegner_anzahl)
+ 
+                    if ergebnis is None:
+                        st.error("Keine gültige Auslosung möglich – bitte andere Gegneranzahl oder Spieleranzahl wählen.")
+                    else:
+                        spielplan = erstelle_spielplan(ergebnis)
+                        st.session_state.spielplan = spielplan
+                        st.session_state.spielplan_reihenfolge = list(range(len(spielplan)))
+                        st.session_state.spielplan_extra = extra_spieler
+                        st.session_state.spielplan_spieltag = spieltag_nr.strip()
+                        st.session_state.spielplan_ergebnisse = {}
+                        st.rerun()
  
     # ---------------------
     # SPIELPLAN ANZEIGEN
@@ -831,16 +834,14 @@ elif "Auslosung 🎲" in menu:
                         berechne_elo_aus_log(df_log)
  
                         st.session_state.letzter_spieltag = spieltag_nr
+                        st.session_state.zeige_zusammenfassung = True
+                        st.session_state.zusammenfassung_spieltag = spieltag_nr
                         st.session_state.spielplan = None
                         st.session_state.spielplan_reihenfolge = None
                         st.session_state.spielplan_extra = None
                         st.session_state.spielplan_spieltag = ""
                         st.session_state.spielplan_ergebnisse = {}
- 
-                        st.success(f"✅ Spieltag {spieltag_nr} wurde in die Rangliste übernommen!")
- 
-                        with st.expander("🏆 Spieltag-Zusammenfassung", expanded=True):
-                            zeige_spieltag_zusammenfassung(spieltag_nr, lade_log())
+                        st.rerun()
  
             with col_reset:
                 if st.button("🗑 Spielplan verwerfen"):
@@ -872,19 +873,6 @@ elif "Spieltage 📊" in menu:
         )
  
         zeige_spieltag_zusammenfassung(ausgewaehlter_spieltag, df_log)
- 
-        st.markdown("---")
-        st.markdown(f"#### Alle Spiele – Spieltag {ausgewaehlter_spieltag}")
-        spiele_st = df_log[df_log["Datum"].astype(str) == str(ausgewaehlter_spieltag)]
-        for _, row in spiele_st.iterrows():
-            c1, c2 = st.columns([5, 2])
-            with c1:
-                st.markdown(
-                    f"{row['Spieler A']} **{row['Legs A']}:{row['Legs B']}** {row['Spieler B']} "
-                    f"(Avg {row['Avg A']} / {row['Avg B']})"
-                )
-            with c2:
-                st.markdown(f"{fmt_elo(row['Elo A'])} | {fmt_elo(row['Elo B'])}", unsafe_allow_html=True)
  
 # ---------------------
 # ADMIN
