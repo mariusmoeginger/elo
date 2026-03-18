@@ -249,7 +249,11 @@ if "Rangliste" in menu:
  
         platz = f"<span style='color:gold;font-weight:bold'>{i+1}</span>" if i < 3 else str(i+1)
         rows.append({"Platz": platz, "Spieler": s, "Spiele": spiele, "Punkte": punkte})
-    st.markdown(pd.DataFrame(rows).to_html(escape=False, index=False), unsafe_allow_html=True)
+    st.markdown(
+    "<style>table td, table th { text-align: center !important; }</style>" +
+    pd.DataFrame(rows).to_html(escape=False, index=False),
+    unsafe_allow_html=True
+)
     
     st.markdown("------")
  
