@@ -591,13 +591,13 @@ elif "Auslosung 🎲" in menu:
  
             # Spaltenheader
             h = st.columns([1, 3, 3, 2, 2, 2, 2])
-            h[0].markdown("**Pos.**")
-            h[1].markdown("**Spieler A**")
-            h[2].markdown("**Spieler B**")
-            h[3].markdown("**Legs A**")
-            h[4].markdown("**Legs B**")
-            h[5].markdown("**Avg A**")
-            h[6].markdown("**Avg B**")
+            h[0].markdown("**Spiel**")
+            h[1].markdown("**Spieler**")
+            h[2].markdown("**Spieler**")
+            h[3].markdown("**Legs**")
+            h[4].markdown("**Legs**")
+            h[5].markdown("**Avg**")
+            h[6].markdown("**Avg**")
  
             ergebnisse_temp = {}
             positionen_temp = {}
