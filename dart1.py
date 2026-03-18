@@ -307,7 +307,7 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
  
     # Elo-Gewinner
     with col1:
-        st.markdown("**Spieltagsgewinner**")
+        st.markdown("**Größte Elo-Gewinner**")
         medals = ["🥇", "🥈", "🥉"]
         for idx, (name, delta) in enumerate(gewinner):
             sign = f"+{delta}" if delta >= 0 else str(delta)
@@ -319,7 +319,7 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
  
     # Elo-Verlierer
     with col2:
-        st.markdown("**Spieltagsverlierer**")
+        st.markdown("**Größte Elo-Verlierer**")
         for idx, (name, delta) in enumerate(verlierer):
             st.markdown(
                 f"#{idx+1} {name} &nbsp; <span style='color:red;font-weight:bold;'>{delta}</span>",
@@ -329,20 +329,28 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
     st.markdown("---")
     col3, col4 = st.columns(2)
  
-    # Average-King
+    # Bestleistung
     with col3:
         if avg_king:
-            st.markdown("**Bestleistung**")
-            st.markdown(f"**{avg_king[0]}** gegen {avg_king[2]}")
-            st.markdown(f"<span style='font-size:28px;font-weight:bold;color:#2e7d32;'>{avg_king[1]:.1f} Avg</span>", unsafe_allow_html=True)
+            st.markdown("<span style='font-size:18px;font-weight:bold;text-decoration:underline;'>Bestleistung</span>", unsafe_allow_html=True)
+            # Ergebnis des Spiels heraussuchen
+            for _, row in spiele.iterrows():
+                if row["Spieler A"] == avg_king[0] and row["Spieler B"] == avg_king[2]:
+                    ergebnis_str = f"{int(row['Legs A'])}:{int(row['Legs B'])}"
+                    break
+                elif row["Spieler B"] == avg_king[0] and row["Spieler A"] == avg_king[2]:
+                    ergebnis_str = f"{int(row['Legs B'])}:{int(row['Legs A'])}"
+                    break
+            else:
+                ergebnis_str = "–"
+            st.markdown(f"{avg_king[0]} ({ergebnis_str} vs {avg_king[2]}) &nbsp; **{avg_king[1]:.1f} Avg**", unsafe_allow_html=True)
  
     # Größte Überraschung
     with col4:
-        st.markdown("**Überraschung des Spieltags**")
+        st.markdown("<span style='font-size:18px;font-weight:bold;text-decoration:underline;'>Größte Überraschung</span>", unsafe_allow_html=True)
         if groesste_ueberraschung:
             gew_s, ver_s, diff, la, lb = groesste_ueberraschung
-            st.markdown(f"**{gew_s}** besiegte {ver_s} ({la}:{lb})")
-            st.markdown(f"<span style='color:#6a1b9a;font-weight:bold;'>Elo-Differenz vorher: +{diff} für {ver_s}</span>", unsafe_allow_html=True)
+            st.markdown(f"{gew_s} ({la}:{lb} vs {ver_s}) &nbsp; **+{diff} Elo-Diff.**", unsafe_allow_html=True)
         else:
             st.markdown("Keine Underdog-Siege in diesem Spieltag.")
  
