@@ -343,14 +343,16 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
                     break
             else:
                 ergebnis_str = "–"
-            st.markdown(f"{avg_king[0]} ({ergebnis_str} vs {avg_king[2]}) &nbsp; **{avg_king[1]:.1f} Avg**", unsafe_allow_html=True)
+            st.markdown(f"{avg_king[0]} ({ergebnis_str} vs {avg_king[2]})")
+            st.markdown(f"<span style='color:green;font-weight:bold;font-size:20px;'>{avg_king[1]:.1f} Avg</span>", unsafe_allow_html=True)
  
     # Größte Überraschung
     with col4:
         st.markdown("<span style='font-size:18px;font-weight:bold;text-decoration:underline;'>Größte Überraschung</span>", unsafe_allow_html=True)
         if groesste_ueberraschung:
             gew_s, ver_s, diff, la, lb = groesste_ueberraschung
-            st.markdown(f"{gew_s} ({la}:{lb} vs {ver_s}) &nbsp; **+{diff} Elo-Diff.**", unsafe_allow_html=True)
+            st.markdown(f"{gew_s} ({la}:{lb} vs {ver_s})")
+            st.markdown(f"<span style='color:green;font-weight:bold;font-size:20px;'>+{diff} Elo-Differenz</span>", unsafe_allow_html=True)
         else:
             st.markdown("Keine Underdog-Siege in diesem Spieltag.")
  
