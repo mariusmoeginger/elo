@@ -59,8 +59,6 @@ def lade_log():
  
 def speichere_log(df):
     sb = get_supabase()
-    # Kompletten Log in Supabase synchronisieren
-    # Bestehende Einträge updaten, neue einfügen
     for _, row in df.iterrows():
         if "id" in df.columns and pd.notna(row.get("id")):
             sb.table("spiele_log").update({
@@ -113,23 +111,19 @@ def berechne_elo_aus_log(df_log):
         sa = 1 if la > lb else 0
         sb = 1 - sa
  
-        # Spielstärke-Faktor
         G = 1 + abs(la - lb) / 10
-        # Elo-Differenz-Faktor
         D = min(1.3, 1 + abs(ea - eb) / 1200)
  
-        # Average-Faktor
-        if sa == 1:  # Spieler A gewinnt
+        if sa == 1:
             M_a = 1 + 0.3 * (avga - 50) / 50
-        else:        # Spieler A verliert
+        else:
             M_a = 1 - 0.3 * (avga - 50) / 50
  
-        if sb == 1:  # Spieler B gewinnt
+        if sb == 1:
             M_b = 1 + 0.3 * (avgb - 50) / 50
-        else:        # Spieler B verliert
+        else:
             M_b = 1 - 0.3 * (avgb - 50) / 50
  
-        # Elo-Deltas berechnen
         delta_a = K_FAKTOR * G * D * (sa - exp_a) * M_a
         delta_b = K_FAKTOR * G * D * (sb - exp_b) * M_b
  
@@ -177,7 +171,11 @@ def fmt(v):
 # ---------------------
 # STREAMLIT START
 # ---------------------
-st.set_page_config(page_title="Bulls&Friends Ranking", layout="centered")
+st.set_page_config(
+    page_title="Bulls&Friends Ranking",
+    layout="centered",
+    initial_sidebar_state=st.session_state.get("sidebar_state", "expanded")
+)
  
 if "menu" not in st.session_state:
     st.session_state.menu = "Rangliste"
@@ -251,11 +249,12 @@ if "Rangliste" in menu:
  
         platz = f"<span style='color:gold;font-weight:bold'>{i+1}</span>" if i < 3 else str(i+1)
         rows.append({"Platz": platz, "Spieler": s, "Spiele": spiele, "Punkte": punkte})
+ 
     st.markdown(
-    "<style>table td, table th { text-align: center !important; }</style>" +
-    pd.DataFrame(rows).to_html(escape=False, index=False),
-    unsafe_allow_html=True
-)
+        "<style>table td, table th { text-align: center !important; }</style>" +
+        pd.DataFrame(rows).to_html(escape=False, index=False),
+        unsafe_allow_html=True
+    )
     
     st.markdown("------")
  
@@ -284,8 +283,6 @@ Das **Bulls&Friends Power-Ranking** ist ein **Elo-basiertes Punktesystem**, welc
 ***Zusatz:***
     Es ist nicht nachteilig, wenn Spieler nur selten teilnehmen oder **zufällig starke Gegner zugelost bekommen**.
     Das Elo-System gleicht solche Effekte langfristig aus: Spieler, die **selten spielen, behalten ihre Punkte**, Niederlagen gegen starke Spieler werden **nicht zu sehr** bestraft und jeder hat die Chance, durch gute Leistungen **aufzusteigen**.
- 
- 
     
     """, unsafe_allow_html=True)
  
@@ -333,7 +330,6 @@ elif "Vergangene Spiele" in menu:
  
     df_log = lade_log()
  
-    # Falls edit_index noch nicht existiert
     if "edit_index" not in st.session_state:
         st.session_state.edit_index = None
  
@@ -341,9 +337,6 @@ elif "Vergangene Spiele" in menu:
         st.info("Noch keine Spiele eingetragen.")
     else:
  
-        # ---------------------
-        # LISTE DER SPIELE
-        # ---------------------
         for i, row in df_log.iterrows():
             col1, col2, col3 = st.columns([5, 2, 1])
  
@@ -375,18 +368,14 @@ elif "Vergangene Spiele" in menu:
                     st.session_state.edit_index = row_id
                     st.rerun()
  
-        # ---------------------
-        # BEARBEITUNG
-        # ---------------------
         if st.session_state.edit_index is not None:
  
             st.markdown("---")
             st.subheader("🛠 Spiel bearbeiten")
  
             idx = st.session_state.edit_index
-            df_log = lade_log()  # FRISCH LADEN (Cloud-Schutz)
+            df_log = lade_log()
  
-            # Zeile anhand Supabase-ID suchen
             if "id" in df_log.columns:
                 row = df_log[df_log["id"] == idx].iloc[0]
             else:
@@ -400,57 +389,16 @@ elif "Vergangene Spiele" in menu:
  
                 with st.form("edit_form"):
  
-                    a = st.selectbox(
-                        "Spieler A",
-                        spieler,
-                        index=spieler.index(row["Spieler A"])
-                    )
- 
-                    b = st.selectbox(
-                        "Spieler B",
-                        spieler,
-                        index=spieler.index(row["Spieler B"])
-                    )
- 
-                    la = st.number_input(
-                        "Legs A",
-                        min_value=0,
-                        step=1,
-                        value=int(row["Legs A"])
-                    )
- 
-                    lb = st.number_input(
-                        "Legs B",
-                        min_value=0,
-                        step=1,
-                        value=int(row["Legs B"])
-                    )
- 
-                    avga = st.number_input(
-                        "Average A",
-                        min_value=0.0,
-                        step=0.1,
-                        value=float(row["Avg A"])
-                    )
- 
-                    avgb = st.number_input(
-                        "Average B",
-                        min_value=0.0,
-                        step=0.1,
-                        value=float(row["Avg B"])
-                    )
- 
-                    spieltag = st.text_input(
-                        "Spieltag",
-                        value=str(row["Datum"])
-                    )
- 
+                    a = st.selectbox("Spieler A", spieler, index=spieler.index(row["Spieler A"]))
+                    b = st.selectbox("Spieler B", spieler, index=spieler.index(row["Spieler B"]))
+                    la = st.number_input("Legs A", min_value=0, step=1, value=int(row["Legs A"]))
+                    lb = st.number_input("Legs B", min_value=0, step=1, value=int(row["Legs B"]))
+                    avga = st.number_input("Average A", min_value=0.0, step=0.1, value=float(row["Avg A"]))
+                    avgb = st.number_input("Average B", min_value=0.0, step=0.1, value=float(row["Avg B"]))
+                    spieltag = st.text_input("Spieltag", value=str(row["Datum"]))
                     save = st.form_submit_button("💾 Änderungen speichern")
                     delete = st.form_submit_button("🗑 Spiel löschen")
  
-                # ---------------------
-                # SPEICHERN
-                # ---------------------
                 if save:
                     sb = get_supabase()
                     sb.table("spiele_log").update({
@@ -462,22 +410,15 @@ elif "Vergangene Spiele" in menu:
                         "avg_a": float(avga),
                         "avg_b": float(avgb)
                     }).eq("id", idx).execute()
- 
                     berechne_elo_aus_log(lade_log())
- 
                     st.success("Spiel aktualisiert!")
                     st.session_state.edit_index = None
                     st.rerun()
  
-                # ---------------------
-                # LÖSCHEN
-                # ---------------------
                 if delete:
                     sb = get_supabase()
                     sb.table("spiele_log").delete().eq("id", idx).execute()
- 
                     berechne_elo_aus_log(lade_log())
- 
                     st.success("Spiel gelöscht!")
                     st.session_state.edit_index = None
                     st.rerun()
@@ -569,57 +510,56 @@ elif "Auslosung 🎲" in menu:
  
     def auslosen(spieler, gegner):
         if len(spieler) < gegner + 1:
-            return None
-
-    n = len(spieler)
-    # Prüfen ob ungerade Kombination → ein Spieler bekommt einen mehr
-    ein_extra = (n * gegner) % 2 != 0
-
-    for _ in range(5000):
-        paarungen = {s: set() for s in spieler}
-        extra_spieler = random.choice(spieler) if ein_extra else None
-
-        for s in spieler:
-            limit = gegner + 1 if s == extra_spieler else gegner
-            moeglich = [x for x in spieler if x != s and x not in paarungen[s]]
-            random.shuffle(moeglich)
-
-            for g in moeglich:
-                g_limit = gegner + 1 if g == extra_spieler else gegner
-                if len(paarungen[s]) < limit and len(paarungen[g]) < g_limit:
-                    paarungen[s].add(g)
-                    paarungen[g].add(s)
-
-        if all(
-            len(paarungen[s]) == (gegner + 1 if s == extra_spieler else gegner)
-            for s in spieler
-        ):
-            return paarungen, extra_spieler
-
-    return None, None
-
-if st.button("🎯 Auslosung starten"):
-    if len(anwesend) < 4:
-        st.error("Mindestens 4 Spieler erforderlich.")
-    else:
-        ergebnis, extra_spieler = auslosen(anwesend, gegner_anzahl)
-
-        if ergebnis is None:
-            st.error("Keine gültige Auslosung möglich – bitte andere Gegneranzahl oder Spieleranzahl wählen.")
+            return None, None
+ 
+        n = len(spieler)
+        ein_extra = (n * gegner) % 2 != 0
+ 
+        for _ in range(5000):
+            paarungen = {s: set() for s in spieler}
+            extra_spieler = random.choice(spieler) if ein_extra else None
+ 
+            for s in spieler:
+                limit = gegner + 1 if s == extra_spieler else gegner
+                moeglich = [x for x in spieler if x != s and x not in paarungen[s]]
+                random.shuffle(moeglich)
+ 
+                for g in moeglich:
+                    g_limit = gegner + 1 if g == extra_spieler else gegner
+                    if len(paarungen[s]) < limit and len(paarungen[g]) < g_limit:
+                        paarungen[s].add(g)
+                        paarungen[g].add(s)
+ 
+            if all(
+                len(paarungen[s]) == (gegner + 1 if s == extra_spieler else gegner)
+                for s in spieler
+            ):
+                return paarungen, extra_spieler
+ 
+        return None, None
+ 
+    if st.button("🎯 Auslosung starten"):
+        if len(anwesend) < 4:
+            st.error("Mindestens 4 Spieler erforderlich.")
         else:
-            st.success("Auslosung erfolgreich!")
-
-            if extra_spieler:
-                st.info(f"⚠️ Ungerade Spieleranzahl: **{extra_spieler}** bekommt {gegner_anzahl + 1} Gegner statt {gegner_anzahl}.")
-
-            st.markdown("## 📋 Paarungen")
-            for s in sorted(ergebnis.keys()):
-                gegner_liste = ", ".join(sorted(ergebnis[s]))
-                anzahl = len(ergebnis[s])
-                if s == extra_spieler:
-                    st.markdown(f"**{s}** spielt gegen: {gegner_liste} ⚠️ ({anzahl} Spiele)")
-                else:
-                    st.markdown(f"**{s}** spielt gegen: {gegner_liste}")
+            ergebnis, extra_spieler = auslosen(anwesend, gegner_anzahl)
+ 
+            if ergebnis is None:
+                st.error("Keine gültige Auslosung möglich – bitte andere Gegneranzahl oder Spieleranzahl wählen.")
+            else:
+                st.success("Auslosung erfolgreich!")
+ 
+                if extra_spieler:
+                    st.info(f"⚠️ Ungerade Spieleranzahl: **{extra_spieler}** bekommt {gegner_anzahl + 1} Gegner statt {gegner_anzahl}.")
+ 
+                st.markdown("## 📋 Paarungen")
+                for s in sorted(ergebnis.keys()):
+                    gegner_liste = ", ".join(sorted(ergebnis[s]))
+                    anzahl = len(ergebnis[s])
+                    if s == extra_spieler:
+                        st.markdown(f"**{s}** spielt gegen: {gegner_liste} ⚠️ ({anzahl} Spiele)")
+                    else:
+                        st.markdown(f"**{s}** spielt gegen: {gegner_liste}")
  
  
 # ---------------------
@@ -645,6 +585,7 @@ elif "Admin 🔐" in menu:
             df["Elo"] = preview["Neu"].round(0)
             speichere_spieler(df)
             st.success("Punkteabstände übernommen!")
+ 
 
 
 
