@@ -568,7 +568,7 @@ elif "Auslosung 🎲" in menu:
     import random
  
     def auslosen(spieler, gegner):
-    if len(spieler) < gegner + 1:
+        if len(spieler) < gegner + 1:
         return None
 
     n = len(spieler)
