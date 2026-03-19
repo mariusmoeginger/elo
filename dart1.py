@@ -61,6 +61,7 @@ def lade_log():
     return df
  
 def speichere_log(df):
+    # Nur bestehende Zeilen (mit ID) updaten – niemals neu einfügen
     sb = get_supabase()
     for _, row in df.iterrows():
         if "id" in df.columns and pd.notna(row.get("id")):
@@ -75,18 +76,21 @@ def speichere_log(df):
                 "elo_a": int(row["Elo A"]),
                 "elo_b": int(row["Elo B"])
             }).eq("id", int(row["id"])).execute()
-        else:
-            sb.table("spiele_log").insert({
-                "datum": row["Datum"],
-                "spieler_a": row["Spieler A"],
-                "spieler_b": row["Spieler B"],
-                "legs_a": int(row["Legs A"]),
-                "legs_b": int(row["Legs B"]),
-                "avg_a": float(row["Avg A"]),
-                "avg_b": float(row["Avg B"]),
-                "elo_a": int(row["Elo A"]),
-                "elo_b": int(row["Elo B"])
-            }).execute()
+ 
+def insert_spiel(datum, a, b, la, lb, avga, avgb):
+    # Neues Spiel einmalig einfügen, ID von Supabase zurückbekommen
+    sb = get_supabase()
+    sb.table("spiele_log").insert({
+        "datum": datum,
+        "spieler_a": a,
+        "spieler_b": b,
+        "legs_a": int(la),
+        "legs_b": int(lb),
+        "avg_a": float(avga),
+        "avg_b": float(avgb),
+        "elo_a": 0,
+        "elo_b": 0
+    }).execute()
  
 # ---------------------
 # ELO-BERECHNUNG
@@ -95,6 +99,7 @@ def erwartung(a, b):
     return 1 / (1 + pow(10, (b - a) / 400))
  
 def berechne_elo_aus_log(df_log):
+    # Lädt frisch aus Supabase, berechnet Elos neu und updated nur die Elo-Deltas
     df = lade_spieler()
     alle = pd.concat([df.index.to_series(), df_log["Spieler A"], df_log["Spieler B"]]).dropna().unique()
     for s in alle:
@@ -138,25 +143,18 @@ def berechne_elo_aus_log(df_log):
         df.loc[a, "Spiele"] += 1
         df.loc[b, "Spiele"] += 1
  
+    # Spieler-Elos speichern
     speichere_spieler(df)
+    # Nur Elo-Deltas auf bestehenden Zeilen updaten (kein Insert!)
     speichere_log(df_log)
     return df, df_log
  
  
 def log_spiel(a, b, la, lb, avga, avgb, spieltag):
+    # 1. Einmalig einfügen
+    insert_spiel(spieltag, a, b, la, lb, avga, avgb)
+    # 2. Frisch laden (jetzt mit ID) und Elos neu berechnen
     df_log = lade_log()
-    df_log.loc[len(df_log)] = {
-        "Datum": spieltag,
-        "Spieler A": a,
-        "Spieler B": b,
-        "Legs A": la,
-        "Legs B": lb,
-        "Avg A": avga,
-        "Avg B": avgb,
-        "Elo A": 0,
-        "Elo B": 0
-    }
-    speichere_log(df_log)
     return berechne_elo_aus_log(df_log)
  
 # ---------------------
@@ -563,16 +561,6 @@ elif "Vergangene Spiele" in menu:
     else:
         for i, row in df_log.iterrows():
             col1, col2, col3 = st.columns([5, 2, 1])
- 
-            def fmt_elo_local(v):
-                v = int(v)
-                if v > 0:
-                    return f"<span style='color:green'>+{v} ▲</span>"
-                elif v < 0:
-                    return f"<span style='color:red'>{v} ▼</span>"
-                else:
-                    return "<span style='color:gray'>0</span>"
- 
             with col1:
                 st.markdown(
                     f"**Spieltag {row['Datum']}** — "
@@ -580,7 +568,7 @@ elif "Vergangene Spiele" in menu:
                     f"(Avg {row['Avg A']} / {row['Avg B']})"
                 )
             with col2:
-                st.markdown(f"{fmt_elo_local(row['Elo A'])} | {fmt_elo_local(row['Elo B'])}", unsafe_allow_html=True)
+                st.markdown(f"{fmt_elo(row['Elo A'])} | {fmt_elo(row['Elo B'])}", unsafe_allow_html=True)
             with col3:
                 row_id = int(row["id"]) if "id" in df_log.columns else i
                 if st.button("🛠", key=f"edit_{row_id}"):
@@ -1160,25 +1148,15 @@ elif "Auslosung 🎲" in menu:
                     if unvollstaendig:
                         st.warning(f"Noch keine Ergebnisse bei: {', '.join(unvollstaendig)}")
                     else:
-                        df_log = lade_log()
+                        # Jedes Spiel einmalig einfügen
                         for orig_idx in reihenfolge:
                             spiel = spielplan[orig_idx]
                             a, b = spiel[0], spiel[1]
                             e = ergebnisse_temp[orig_idx]
-                            df_log.loc[len(df_log)] = {
-                                "Datum": spieltag_nr,
-                                "Spieler A": a,
-                                "Spieler B": b,
-                                "Legs A": e["legs_a"],
-                                "Legs B": e["legs_b"],
-                                "Avg A": e["avg_a"],
-                                "Avg B": e["avg_b"],
-                                "Elo A": 0,
-                                "Elo B": 0
-                            }
+                            insert_spiel(spieltag_nr, a, b, e["legs_a"], e["legs_b"], e["avg_a"], e["avg_b"])
  
-                        speichere_log(df_log)
-                        berechne_elo_aus_log(df_log)
+                        # Frisch laden und Elos berechnen
+                        berechne_elo_aus_log(lade_log())
  
                         st.session_state.letzter_spieltag = spieltag_nr
                         st.session_state.zeige_zusammenfassung = True
