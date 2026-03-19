@@ -296,10 +296,14 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
     # ---------------------
     # ANZEIGE
     # ---------------------
+    alle_avgs = list(spiele["Avg A"].astype(float)) + list(spiele["Avg B"].astype(float))
+    gesamtaverage = round(sum(alle_avgs) / len(alle_avgs), 2) if alle_avgs else 0
+ 
     st.markdown(f"""
     <div style='background:linear-gradient(135deg,#1a1a2e,#16213e);padding:20px;border-radius:16px;margin-bottom:20px;'>
         <h2 style='color:#e94560;text-align:center;margin:0;font-size:26px;'>Spieltag {spieltag_nr}</h2>
         <p style='color:#aaa;text-align:center;margin:4px 0 0 0;font-size:14px;'>{len(spiele)} Spiele ausgetragen</p>
+        <p style='color:#aaa;text-align:center;margin:2px 0 0 0;font-size:14px;'>Gesamtaverage des Spieltags: {gesamtaverage}</p>
     </div>
     """, unsafe_allow_html=True)
  
