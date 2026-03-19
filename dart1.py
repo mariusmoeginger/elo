@@ -469,16 +469,44 @@ if "Rangliste" in menu:
     df_aktiv = df[df["Spiele"] > 0]
     df_inaktiv = df[df["Spiele"] == 0]
  
-    # Header – Spaltenbreiten exakt wie die Zeilen
-    h1, h2, h3, h4 = st.columns([0.4, 3, 0.6, 1.2])
-    with h1:
-        st.markdown("<div style='font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;padding-bottom:4px;border-bottom:2px solid #e0e0e0;'>#</div>", unsafe_allow_html=True)
-    with h2:
-        st.markdown("<div style='font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;padding-bottom:4px;border-bottom:2px solid #e0e0e0;'>Spieler</div>", unsafe_allow_html=True)
-    with h3:
-        st.markdown("<div style='font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;padding-bottom:4px;border-bottom:2px solid #e0e0e0;text-align:center;'>Spiele</div>", unsafe_allow_html=True)
-    with h4:
-        st.markdown("<div style='font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;padding-bottom:4px;border-bottom:2px solid #e0e0e0;text-align:right;'>Punkte</div>", unsafe_allow_html=True)
+    # Responsive HTML-Tabelle + echte Streamlit-Buttons als Zeilen
+    st.markdown("""
+    <style>
+    .rangliste-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 15px;
+        margin-bottom: 4px;
+    }
+    .rangliste-table th {
+        font-size: 11px;
+        color: #888;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        padding: 6px 8px;
+        border-bottom: 2px solid #e0e0e0;
+    }
+    .rangliste-table th:first-child { text-align: center; width: 32px; }
+    .rangliste-table th:nth-child(2) { text-align: left; }
+    .rangliste-table th:nth-child(3) { text-align: center; width: 60px; }
+    .rangliste-table th:last-child { text-align: right; width: 100px; }
+    .rangliste-table td {
+        padding: 7px 8px;
+        border-bottom: 1px solid #f0f0f0;
+        vertical-align: middle;
+    }
+    .rl-pos { text-align: center; color: #555; }
+    .rl-pos.gold { color: goldenrod; font-weight: 600; }
+    .rl-sp { text-align: center; color: #777; }
+    .rl-pts { text-align: right; }
+    </style>
+    <table class='rangliste-table'>
+        <thead><tr>
+            <th>#</th><th>Spieler</th><th>Spiele</th><th>Punkte</th>
+        </tr></thead>
+    </table>
+    """, unsafe_allow_html=True)
  
     for i, s in enumerate(df_aktiv.index):
         letzte = df_log[(df_log["Spieler A"] == s) | (df_log["Spieler B"] == s)].tail(3)
@@ -487,28 +515,25 @@ if "Rangliste" in menu:
         spiele_count = int(df_aktiv.loc[s, "Spiele"])
  
         if form > 0:
-            form_html = f"<span style='color:green;font-size:70%;'>+{int(form)} ▲</span>"
+            form_html = f" <span style='color:green;font-size:75%;'>+{int(form)} ▲</span>"
         elif form < 0:
-            form_html = f"<span style='color:red;font-size:70%;'>{int(form)} ▼</span>"
+            form_html = f" <span style='color:red;font-size:75%;'>{int(form)} ▼</span>"
         else:
             form_html = ""
  
-        platz_color = "gold" if i < 3 else "#555"
+        platz_color = "goldenrod" if i < 3 else "#555"
  
-        col_platz, col_name, col_sp, col_pts = st.columns([0.4, 3, 0.6, 1.2])
-        with col_platz:
-            st.markdown(f"<div style='padding:6px 0;color:{platz_color};'>{i+1}</div>", unsafe_allow_html=True)
+        col_pos, col_name, col_sp, col_pts = st.columns([0.5, 4, 0.8, 1.5])
+        with col_pos:
+            st.markdown(f"<div style='padding:6px 0 0 0;text-align:center;color:{platz_color};'>{i+1}</div>", unsafe_allow_html=True)
         with col_name:
             if st.button(s, key=f"player_btn_{s}", use_container_width=True):
-                if st.session_state.ausgewaehlter_spieler == s:
-                    st.session_state.ausgewaehlter_spieler = None
-                else:
-                    st.session_state.ausgewaehlter_spieler = s
+                st.session_state.ausgewaehlter_spieler = s
                 st.rerun()
         with col_sp:
-            st.markdown(f"<div style='padding:6px 0;text-align:center;color:#555;'>{spiele_count}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='padding:6px 0 0 0;text-align:center;color:#777;'>{spiele_count}</div>", unsafe_allow_html=True)
         with col_pts:
-            st.markdown(f"<div style='padding:6px 0;text-align:right;'>{elo} {form_html}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='padding:6px 0 0 0;text-align:right;'>{elo}{form_html}</div>", unsafe_allow_html=True)
  
     # Inaktive Spieler
     if not df_inaktiv.empty:
