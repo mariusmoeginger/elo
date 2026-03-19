@@ -298,7 +298,7 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
     # ---------------------
     st.markdown(f"""
     <div style='background:linear-gradient(135deg,#1a1a2e,#16213e);padding:20px;border-radius:16px;margin-bottom:20px;'>
-        <h2 style='color:#e94560;text-align:center;margin:0;font-size:26px;'>Spieltag {spieltag_nr} &ndash; Zusammenfassung</h2>
+        <h2 style='color:#e94560;text-align:center;margin:0;font-size:26px;'>Spieltag {spieltag_nr}</h2>
         <p style='color:#aaa;text-align:center;margin:4px 0 0 0;font-size:14px;'>{len(spiele)} Spiele ausgetragen</p>
     </div>
     """, unsafe_allow_html=True)
