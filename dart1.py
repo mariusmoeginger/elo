@@ -406,6 +406,8 @@ if "zeige_zusammenfassung" not in st.session_state:
     st.session_state.zeige_zusammenfassung = False
 if "zusammenfassung_spieltag" not in st.session_state:
     st.session_state.zusammenfassung_spieltag = None
+if "ausgewaehlter_spieler" not in st.session_state:
+    st.session_state.ausgewaehlter_spieler = None
  
 # ---------------------
 # HEADER
@@ -434,7 +436,6 @@ menu_liste = [
     "Rangliste 🥇",
     "Spiel eintragen 🎯",
     "Vergangene Spiele 📄",
-    "Spieler 👤",
     "Head-to-Head ⚔️",
     "Bestenlisten 🏅",
     "Spieler anlegen ➕",
@@ -457,29 +458,181 @@ if "Rangliste" in menu:
     df_log = lade_log()
     df, df_log = berechne_elo_aus_log(df_log)
     df = df.sort_values("Elo", ascending=False)
+    rang_liste = list(df.index)
  
-    rows = []
+    # Header
+    st.markdown("""
+    <style>table td, table th { text-align: center !important; }</style>
+    <div style='display:grid;grid-template-columns:40px 1fr 60px 120px;gap:0;border-bottom:2px solid #e0e0e0;padding-bottom:6px;margin-bottom:4px;'>
+        <div style='font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;'>#</div>
+        <div style='font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;'>Spieler</div>
+        <div style='font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;text-align:center;'>Spiele</div>
+        <div style='font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;text-align:right;'>Punkte</div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
     for i, s in enumerate(df.index):
         letzte = df_log[(df_log["Spieler A"] == s) | (df_log["Spieler B"] == s)].tail(3)
         form = sum([r["Elo A"] if r["Spieler A"] == s else r["Elo B"] for _, r in letzte.iterrows()])
         elo = int(df.loc[s, "Elo"])
-        spiele = int(df.loc[s, "Spiele"])
+        spiele_count = int(df.loc[s, "Spiele"])
  
         if form > 0:
-            punkte = f"{elo} <span style='color:green;font-size:70%;'>+{int(form)} ▲</span>"
+            form_html = f"<span style='color:green;font-size:70%;'>+{int(form)} ▲</span>"
         elif form < 0:
-            punkte = f"{elo} <span style='color:red;font-size:70%;'>{int(form)} ▼</span>"
+            form_html = f"<span style='color:red;font-size:70%;'>{int(form)} ▼</span>"
         else:
-            punkte = str(elo)
+            form_html = ""
  
-        platz = f"<span style='color:gold;font-weight:bold'>{i+1}</span>" if i < 3 else str(i+1)
-        rows.append({"Platz": platz, "Spieler": s, "Spiele": spiele, "Punkte": punkte})
+        platz_color = "gold" if i < 3 else "#555"
+        is_selected = st.session_state.ausgewaehlter_spieler == s
+        bg = "background:#f0f4ff;" if is_selected else ""
  
-    st.markdown(
-        "<style>table td, table th { text-align: center !important; }</style>" +
-        pd.DataFrame(rows).to_html(escape=False, index=False),
-        unsafe_allow_html=True
-    )
+        col_platz, col_name, col_sp, col_pts = st.columns([0.4, 3, 0.6, 1.2])
+        with col_platz:
+            st.markdown(f"<div style='padding:8px 0;font-weight:700;color:{platz_color};'>{i+1}</div>", unsafe_allow_html=True)
+        with col_name:
+            if st.button(s, key=f"player_btn_{s}", use_container_width=True):
+                if st.session_state.ausgewaehlter_spieler == s:
+                    st.session_state.ausgewaehlter_spieler = None
+                else:
+                    st.session_state.ausgewaehlter_spieler = s
+                st.rerun()
+        with col_sp:
+            st.markdown(f"<div style='padding:8px 0;text-align:center;color:#555;'>{spiele_count}</div>", unsafe_allow_html=True)
+        with col_pts:
+            st.markdown(f"<div style='padding:8px 0;text-align:right;font-weight:700;'>{elo} {form_html}</div>", unsafe_allow_html=True)
+ 
+    # ---------------------
+    # SPIELERPROFIL (ausgeklappt unter der Rangliste)
+    # ---------------------
+    gew = st.session_state.ausgewaehlter_spieler
+    if gew and gew in df.index:
+        st.markdown("---")
+        spiele = df_log[(df_log["Spieler A"] == gew) | (df_log["Spieler B"] == gew)]
+ 
+        siege = sum(
+            ((spiele["Spieler A"] == gew) & (spiele["Legs A"] > spiele["Legs B"])) |
+            ((spiele["Spieler B"] == gew) & (spiele["Legs B"] > spiele["Legs A"]))
+        )
+        niederlagen = len(spiele) - siege
+        leg_diff = sum(spiele.apply(
+            lambda r: r["Legs A"] - r["Legs B"] if r["Spieler A"] == gew else r["Legs B"] - r["Legs A"], axis=1))
+        gesamt_avg = (
+            sum(spiele.apply(lambda r: r["Avg A"] if r["Spieler A"] == gew else r["Avg B"], axis=1)) / len(spiele)
+            if len(spiele) > 0 else 0
+        )
+        elo_aktuell = int(df.loc[gew, "Elo"])
+        rang = rang_liste.index(gew) + 1
+        siegquote = round(siege / len(spiele) * 100, 1) if len(spiele) > 0 else 0
+        best_avg = max(spiele.apply(lambda r: r["Avg A"] if r["Spieler A"] == gew else r["Avg B"], axis=1)) if not spiele.empty else 0
+ 
+        letzte5 = spiele.tail(5)
+        form_str = ""
+        for _, r in letzte5.iterrows():
+            gewonnen = (r["Spieler A"] == gew and r["Legs A"] > r["Legs B"]) or \
+                       (r["Spieler B"] == gew and r["Legs B"] > r["Legs A"])
+            form_str += "🟢" if gewonnen else "🔴"
+ 
+        st.markdown(f"""
+        <div style='background:linear-gradient(135deg,#1a1a2e,#16213e);padding:24px;border-radius:12px;margin-bottom:24px;border:1px solid #2a3555;'>
+            <div style='display:flex;justify-content:space-between;align-items:flex-start;'>
+                <div>
+                    <div style='font-size:13px;letter-spacing:3px;text-transform:uppercase;color:#6b7fa3;margin-bottom:4px;'>Spielerprofil</div>
+                    <div style='font-size:36px;font-weight:900;color:#ffffff;letter-spacing:1px;'>{gew}</div>
+                    <div style='font-size:13px;color:#6b7fa3;margin-top:4px;'>Rang #{rang} · Form: {form_str if form_str else "–"}</div>
+                </div>
+                <div style='text-align:right;'>
+                    <div style='font-size:13px;color:#6b7fa3;letter-spacing:2px;text-transform:uppercase;'>Elo</div>
+                    <div style='font-size:48px;font-weight:900;color:#00aaff;line-height:1;'>{elo_aktuell}</div>
+                </div>
+            </div>
+            <div style='display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-top:24px;'>
+                <div style='text-align:center;'>
+                    <div style='font-size:22px;font-weight:700;color:#fff;'>{len(spiele)}</div>
+                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Spiele</div>
+                </div>
+                <div style='text-align:center;'>
+                    <div style='font-size:22px;font-weight:700;color:#22c55e;'>{siege}</div>
+                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Siege</div>
+                </div>
+                <div style='text-align:center;'>
+                    <div style='font-size:22px;font-weight:700;color:#ef4444;'>{niederlagen}</div>
+                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Niederlagen</div>
+                </div>
+                <div style='text-align:center;'>
+                    <div style='font-size:22px;font-weight:700;color:#f59e0b;'>{siegquote}%</div>
+                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Siegquote</div>
+                </div>
+                <div style='text-align:center;'>
+                    <div style='font-size:22px;font-weight:700;color:#fff;'>{round(gesamt_avg, 1)}</div>
+                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Avg</div>
+                </div>
+            </div>
+            <div style='display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:16px;padding-top:16px;border-top:1px solid #2a3555;'>
+                <div style='text-align:center;'>
+                    <div style='font-size:18px;font-weight:700;color:#fff;'>{leg_diff:+d}</div>
+                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Leg-Differenz</div>
+                </div>
+                <div style='text-align:center;'>
+                    <div style='font-size:18px;font-weight:700;color:#fff;'>{round(best_avg, 1)}</div>
+                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Best Average</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+ 
+        # Elo-Verlauf
+        if not df_log.empty:
+            verlauf_df = berechne_elo_verlauf(df_log)
+            if gew in verlauf_df.columns:
+                st.markdown("#### Elo-Verlauf")
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=verlauf_df["Spieltag"],
+                    y=verlauf_df[gew],
+                    mode="lines+markers",
+                    name=gew,
+                    line=dict(color="#00aaff", width=3),
+                    marker=dict(size=8, color="#00aaff"),
+                    fill="tozeroy",
+                    fillcolor="rgba(0,170,255,0.08)"
+                ))
+                fig.add_hline(y=START_ELO, line_dash="dot", line_color="#444", opacity=0.5)
+                fig.update_layout(
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    font_color="#aaa",
+                    height=260,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis=dict(showgrid=False, tickfont=dict(size=12)),
+                    yaxis=dict(showgrid=True, gridcolor="#1e2d45", tickfont=dict(size=12)),
+                    showlegend=False
+                )
+                st.plotly_chart(fig, use_container_width=True)
+ 
+        # Letzte Spiele
+        if not spiele.empty:
+            st.markdown("#### Letzte Spiele")
+            for _, r in spiele.tail(8).iloc[::-1].iterrows():
+                gewonnen = (r["Spieler A"] == gew and r["Legs A"] > r["Legs B"]) or \
+                           (r["Spieler B"] == gew and r["Legs B"] > r["Legs A"])
+                gegner = r["Spieler B"] if r["Spieler A"] == gew else r["Spieler A"]
+                legs_gew = r["Legs A"] if r["Spieler A"] == gew else r["Legs B"]
+                legs_geg = r["Legs B"] if r["Spieler A"] == gew else r["Legs A"]
+                avg_gew = r["Avg A"] if r["Spieler A"] == gew else r["Avg B"]
+                elo_d = int(r["Elo A"]) if r["Spieler A"] == gew else int(r["Elo B"])
+                elo_str = f"+{elo_d}" if elo_d >= 0 else str(elo_d)
+                farbe = "green" if gewonnen else "red"
+                ergebnis = "Sieg" if gewonnen else "Niederlage"
+                st.markdown(
+                    f"<span style='color:{farbe};font-weight:bold;'>{'▲' if gewonnen else '▼'} {ergebnis}</span> &nbsp; "
+                    f"vs **{gegner}** &nbsp; {int(legs_gew)}:{int(legs_geg)} &nbsp; "
+                    f"Avg {avg_gew:.1f} &nbsp; "
+                    f"<span style='color:{farbe};font-weight:bold;'>{elo_str}</span> &nbsp; "
+                    f"<span style='color:#888;font-size:12px;'>Spieltag {r['Datum']}</span>",
+                    unsafe_allow_html=True
+                )
  
     st.markdown("------")
  
@@ -624,162 +777,6 @@ elif "Vergangene Spiele" in menu:
                     st.rerun()
  
 # ---------------------
-# SPIELER
-# ---------------------
-elif "Spieler 👤" in menu:
-    st.subheader("👤 Spieler")
- 
-    df_log = lade_log()
-    df_spieler_elo, df_log = berechne_elo_aus_log(df_log)
-    df_spieler_elo = df_spieler_elo.sort_values("Elo", ascending=False)
-    rang_liste = list(df_spieler_elo.index)
- 
-    gew = st.selectbox("Spieler auswählen", rang_liste)
- 
-    spiele = df_log[(df_log["Spieler A"] == gew) | (df_log["Spieler B"] == gew)]
- 
-    siege = sum(
-        ((spiele["Spieler A"] == gew) & (spiele["Legs A"] > spiele["Legs B"])) |
-        ((spiele["Spieler B"] == gew) & (spiele["Legs B"] > spiele["Legs A"]))
-    )
-    niederlagen = len(spiele) - siege
- 
-    leg_diff = sum(spiele.apply(
-        lambda r: r["Legs A"] - r["Legs B"] if r["Spieler A"] == gew else r["Legs B"] - r["Legs A"], axis=1))
- 
-    gesamt_avg = (
-        sum(spiele.apply(lambda r: r["Avg A"] if r["Spieler A"] == gew else r["Avg B"], axis=1)) / len(spiele)
-        if len(spiele) > 0 else 0
-    )
- 
-    elo_aktuell = int(df_spieler_elo.loc[gew, "Elo"]) if gew in df_spieler_elo.index else START_ELO
-    rang = rang_liste.index(gew) + 1
- 
-    # Siegquote
-    siegquote = round(siege / len(spiele) * 100, 1) if len(spiele) > 0 else 0
- 
-    # Höchster Average in einem einzelnen Spiel
-    if not spiele.empty:
-        best_avg = max(spiele.apply(lambda r: r["Avg A"] if r["Spieler A"] == gew else r["Avg B"], axis=1))
-    else:
-        best_avg = 0
- 
-    # Form (letzte 5 Spiele)
-    letzte5 = spiele.tail(5)
-    form_str = ""
-    for _, r in letzte5.iterrows():
-        gewonnen = (r["Spieler A"] == gew and r["Legs A"] > r["Legs B"]) or \
-                   (r["Spieler B"] == gew and r["Legs B"] > r["Legs A"])
-        form_str += "🟢" if gewonnen else "🔴"
- 
-    # ---------------------
-    # PROFILKARTE
-    # ---------------------
-    st.markdown(f"""
-    <div style='background:linear-gradient(135deg,#1a1a2e,#16213e);padding:24px;border-radius:12px;margin-bottom:24px;border:1px solid #2a3555;'>
-        <div style='display:flex;justify-content:space-between;align-items:flex-start;'>
-            <div>
-                <div style='font-size:13px;letter-spacing:3px;text-transform:uppercase;color:#6b7fa3;margin-bottom:4px;'>Spielerprofil</div>
-                <div style='font-size:36px;font-weight:900;color:#ffffff;letter-spacing:1px;'>{gew}</div>
-                <div style='font-size:13px;color:#6b7fa3;margin-top:4px;'>Rang #{rang} · Form: {form_str if form_str else "–"}</div>
-            </div>
-            <div style='text-align:right;'>
-                <div style='font-size:13px;color:#6b7fa3;letter-spacing:2px;text-transform:uppercase;'>Elo</div>
-                <div style='font-size:48px;font-weight:900;color:#00aaff;line-height:1;'>{elo_aktuell}</div>
-            </div>
-        </div>
-        <div style='display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-top:24px;'>
-            <div style='text-align:center;'>
-                <div style='font-size:22px;font-weight:700;color:#fff;'>{len(spiele)}</div>
-                <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Spiele</div>
-            </div>
-            <div style='text-align:center;'>
-                <div style='font-size:22px;font-weight:700;color:#22c55e;'>{siege}</div>
-                <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Siege</div>
-            </div>
-            <div style='text-align:center;'>
-                <div style='font-size:22px;font-weight:700;color:#ef4444;'>{niederlagen}</div>
-                <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Niederlagen</div>
-            </div>
-            <div style='text-align:center;'>
-                <div style='font-size:22px;font-weight:700;color:#f59e0b;'>{siegquote}%</div>
-                <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Siegquote</div>
-            </div>
-            <div style='text-align:center;'>
-                <div style='font-size:22px;font-weight:700;color:#fff;'>{round(gesamt_avg, 1)}</div>
-                <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Avg</div>
-            </div>
-        </div>
-        <div style='display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:16px;padding-top:16px;border-top:1px solid #2a3555;'>
-            <div style='text-align:center;'>
-                <div style='font-size:18px;font-weight:700;color:#fff;'>{leg_diff:+d}</div>
-                <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Leg-Differenz</div>
-            </div>
-            <div style='text-align:center;'>
-                <div style='font-size:18px;font-weight:700;color:#fff;'>{round(best_avg, 1)}</div>
-                <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Best Average</div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
- 
-    # ---------------------
-    # ELO-VERLAUF CHART
-    # ---------------------
-    if not df_log.empty:
-        st.markdown("#### Elo-Verlauf")
-        verlauf_df = berechne_elo_verlauf(df_log)
-        if gew in verlauf_df.columns:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=verlauf_df["Spieltag"],
-                y=verlauf_df[gew],
-                mode="lines+markers",
-                name=gew,
-                line=dict(color="#00aaff", width=3),
-                marker=dict(size=8, color="#00aaff"),
-                fill="tozeroy",
-                fillcolor="rgba(0,170,255,0.08)"
-            ))
-            fig.add_hline(y=START_ELO, line_dash="dot", line_color="#444", opacity=0.5)
-            fig.update_layout(
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)",
-                font_color="#aaa",
-                height=280,
-                margin=dict(l=0, r=0, t=10, b=0),
-                xaxis=dict(showgrid=False, tickfont=dict(size=12)),
-                yaxis=dict(showgrid=True, gridcolor="#1e2d45", tickfont=dict(size=12)),
-                showlegend=False
-            )
-            st.plotly_chart(fig, use_container_width=True)
- 
-    # ---------------------
-    # LETZTE SPIELE
-    # ---------------------
-    if not spiele.empty:
-        st.markdown("#### Letzte Spiele")
-        for _, r in spiele.tail(8).iloc[::-1].iterrows():
-            gewonnen = (r["Spieler A"] == gew and r["Legs A"] > r["Legs B"]) or \
-                       (r["Spieler B"] == gew and r["Legs B"] > r["Legs A"])
-            gegner = r["Spieler B"] if r["Spieler A"] == gew else r["Spieler A"]
-            legs_gew = r["Legs A"] if r["Spieler A"] == gew else r["Legs B"]
-            legs_geg = r["Legs B"] if r["Spieler A"] == gew else r["Legs A"]
-            avg_gew = r["Avg A"] if r["Spieler A"] == gew else r["Avg B"]
-            elo_d = int(r["Elo A"]) if r["Spieler A"] == gew else int(r["Elo B"])
-            elo_str = f"+{elo_d}" if elo_d >= 0 else str(elo_d)
-            farbe = "green" if gewonnen else "red"
-            ergebnis = "Sieg" if gewonnen else "Niederlage"
-            st.markdown(
-                f"<span style='color:{farbe};font-weight:bold;'>{'▲' if gewonnen else '▼'} {ergebnis}</span> &nbsp; "
-                f"vs **{gegner}** &nbsp; {int(legs_gew)}:{int(legs_geg)} &nbsp; "
-                f"Avg {avg_gew:.1f} &nbsp; "
-                f"<span style='color:{farbe};font-weight:bold;'>{elo_str}</span> &nbsp; "
-                f"<span style='color:#888;font-size:12px;'>Spieltag {r['Datum']}</span>",
-                unsafe_allow_html=True
-            )
- 
-# ---------------------
 # HEAD-TO-HEAD
 # ---------------------
 elif "Head-to-Head" in menu:
@@ -816,9 +813,7 @@ elif "Head-to-Head" in menu:
             legs_p2 = sum(h2h.apply(lambda r: r["Legs A"] if r["Spieler A"] == p2 else r["Legs B"], axis=1))
  
             elo_p1 = sum(h2h.apply(lambda r: int(r["Elo A"]) if r["Spieler A"] == p1 else int(r["Elo B"]), axis=1))
-            elo_p2 = sum(h2h.apply(lambda r: int(r["Elo A"]) if r["Spieler A"] == p2 else int(r["Elo B"]), axis=1))
- 
-            # Kopfzeile
+            elo_p2 = sum(h2h.apply(lambda r: int(r["Elo A"]) if r["Spieler A"] == p2 else int(r["Elo B"]), axis=1))            # Kopfzeile
             st.markdown(f"""
             <div style='background:linear-gradient(135deg,#1a1a2e,#16213e);padding:20px;border-radius:12px;margin-bottom:20px;border:1px solid #2a3555;'>
                 <div style='display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px;'>
@@ -853,7 +848,6 @@ elif "Head-to-Head" in menu:
                     col = "#22c55e" if besser2 else ("#ef4444" if besser1 else "#fff")
                     st.markdown(f"<div style='text-align:center;font-size:18px;font-weight:700;color:{col};'>{val2}</div>", unsafe_allow_html=True)
  
-            stat_row("Ø Average", avg_p1, avg_p2)
             stat_row("Legs gewonnen", int(legs_p1), int(legs_p2))
             stat_row("Elo-Gewinn gesamt", f"{elo_p1:+d}", f"{elo_p2:+d}", higher_is_better=True)
  
@@ -866,12 +860,9 @@ elif "Head-to-Head" in menu:
                 ) else p2
                 la = int(r["Legs A"]) if r["Spieler A"] == p1 else int(r["Legs B"])
                 lb = int(r["Legs B"]) if r["Spieler A"] == p1 else int(r["Legs A"])
-                av1 = r["Avg A"] if r["Spieler A"] == p1 else r["Avg B"]
-                av2 = r["Avg B"] if r["Spieler A"] == p1 else r["Avg A"]
                 st.markdown(
                     f"**Spieltag {r['Datum']}** — "
                     f"{p1} **{la}:{lb}** {p2} &nbsp; "
-                    f"(Avg {av1:.1f} / {av2:.1f}) &nbsp; "
                     f"→ <span style='font-weight:bold;'>Sieg {gew_p}</span>",
                     unsafe_allow_html=True
                 )
