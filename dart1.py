@@ -527,11 +527,10 @@ if "Rangliste" in menu:
                     st.markdown(f"<div style='padding:6px 0;text-align:right;color:#bbb;'>{START_ELO}</div>", unsafe_allow_html=True)
  
     # ---------------------
-    # SPIELERPROFIL (ausgeklappt unter der Rangliste)
+    # SPIELERPROFIL POPUP
     # ---------------------
-    gew = st.session_state.ausgewaehlter_spieler
-    if gew and gew in df.index:
-        st.markdown("---")
+    @st.dialog("Spielerprofil", width="large")
+    def zeige_spieler_popup(gew, df, df_log, rang_liste):
         spiele = df_log[(df_log["Spieler A"] == gew) | (df_log["Spieler B"] == gew)]
  
         siege = sum(
@@ -558,48 +557,48 @@ if "Rangliste" in menu:
             form_str += "🟢" if gewonnen else "🔴"
  
         st.markdown(f"""
-        <div style='background:linear-gradient(135deg,#1a1a2e,#16213e);padding:24px;border-radius:12px;margin-bottom:24px;border:1px solid #2a3555;'>
+        <div style='background:linear-gradient(135deg,#1a1a2e,#16213e);padding:24px;border-radius:12px;margin-bottom:20px;border:1px solid #2a3555;'>
             <div style='display:flex;justify-content:space-between;align-items:flex-start;'>
                 <div>
-                    <div style='font-size:13px;letter-spacing:3px;text-transform:uppercase;color:#6b7fa3;margin-bottom:4px;'>Spielerprofil</div>
-                    <div style='font-size:36px;font-weight:900;color:#ffffff;letter-spacing:1px;'>{gew}</div>
+                    <div style='font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#6b7fa3;margin-bottom:4px;'>Spielerprofil</div>
+                    <div style='font-size:32px;font-weight:900;color:#ffffff;letter-spacing:1px;'>{gew}</div>
                     <div style='font-size:13px;color:#6b7fa3;margin-top:4px;'>Rang #{rang} · Form: {form_str if form_str else "–"}</div>
                 </div>
                 <div style='text-align:right;'>
-                    <div style='font-size:13px;color:#6b7fa3;letter-spacing:2px;text-transform:uppercase;'>Elo</div>
-                    <div style='font-size:48px;font-weight:900;color:#00aaff;line-height:1;'>{elo_aktuell}</div>
+                    <div style='font-size:12px;color:#6b7fa3;letter-spacing:2px;text-transform:uppercase;'>Elo</div>
+                    <div style='font-size:44px;font-weight:900;color:#00aaff;line-height:1;'>{elo_aktuell}</div>
                 </div>
             </div>
-            <div style='display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-top:24px;'>
+            <div style='display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:20px;'>
                 <div style='text-align:center;'>
-                    <div style='font-size:22px;font-weight:700;color:#fff;'>{len(spiele)}</div>
-                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Spiele</div>
+                    <div style='font-size:20px;font-weight:700;color:#fff;'>{len(spiele)}</div>
+                    <div style='font-size:10px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Spiele</div>
                 </div>
                 <div style='text-align:center;'>
-                    <div style='font-size:22px;font-weight:700;color:#22c55e;'>{siege}</div>
-                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Siege</div>
+                    <div style='font-size:20px;font-weight:700;color:#22c55e;'>{siege}</div>
+                    <div style='font-size:10px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Siege</div>
                 </div>
                 <div style='text-align:center;'>
-                    <div style='font-size:22px;font-weight:700;color:#ef4444;'>{niederlagen}</div>
-                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Niederlagen</div>
+                    <div style='font-size:20px;font-weight:700;color:#ef4444;'>{niederlagen}</div>
+                    <div style='font-size:10px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Niederlagen</div>
                 </div>
                 <div style='text-align:center;'>
-                    <div style='font-size:22px;font-weight:700;color:#f59e0b;'>{siegquote}%</div>
-                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Siegquote</div>
+                    <div style='font-size:20px;font-weight:700;color:#f59e0b;'>{siegquote}%</div>
+                    <div style='font-size:10px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Siegquote</div>
                 </div>
                 <div style='text-align:center;'>
-                    <div style='font-size:22px;font-weight:700;color:#fff;'>{round(gesamt_avg, 1)}</div>
-                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Avg</div>
+                    <div style='font-size:20px;font-weight:700;color:#fff;'>{round(gesamt_avg, 1)}</div>
+                    <div style='font-size:10px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Avg</div>
                 </div>
             </div>
-            <div style='display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:16px;padding-top:16px;border-top:1px solid #2a3555;'>
+            <div style='display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:14px;padding-top:14px;border-top:1px solid #2a3555;'>
                 <div style='text-align:center;'>
-                    <div style='font-size:18px;font-weight:700;color:#fff;'>{leg_diff:+d}</div>
-                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Leg-Differenz</div>
+                    <div style='font-size:16px;font-weight:700;color:#fff;'>{leg_diff:+d}</div>
+                    <div style='font-size:10px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Leg-Differenz</div>
                 </div>
                 <div style='text-align:center;'>
-                    <div style='font-size:18px;font-weight:700;color:#fff;'>{round(best_avg, 1)}</div>
-                    <div style='font-size:11px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Best Average</div>
+                    <div style='font-size:16px;font-weight:700;color:#fff;'>{round(best_avg, 1)}</div>
+                    <div style='font-size:10px;color:#6b7fa3;letter-spacing:1px;text-transform:uppercase;margin-top:2px;'>Best Average</div>
                 </div>
             </div>
         </div>
@@ -609,7 +608,7 @@ if "Rangliste" in menu:
         if not df_log.empty:
             verlauf_df = berechne_elo_verlauf(df_log)
             if gew in verlauf_df.columns:
-                st.markdown("#### Elo-Verlauf")
+                st.markdown("**Elo-Verlauf**")
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=verlauf_df["Spieltag"],
@@ -626,17 +625,17 @@ if "Rangliste" in menu:
                     plot_bgcolor="rgba(0,0,0,0)",
                     paper_bgcolor="rgba(0,0,0,0)",
                     font_color="#aaa",
-                    height=260,
-                    margin=dict(l=0, r=0, t=10, b=0),
-                    xaxis=dict(showgrid=False, tickfont=dict(size=12)),
-                    yaxis=dict(showgrid=True, gridcolor="#1e2d45", tickfont=dict(size=12)),
+                    height=220,
+                    margin=dict(l=0, r=0, t=8, b=0),
+                    xaxis=dict(showgrid=False, tickfont=dict(size=11)),
+                    yaxis=dict(showgrid=True, gridcolor="#1e2d45", tickfont=dict(size=11)),
                     showlegend=False
                 )
                 st.plotly_chart(fig, use_container_width=True)
  
         # Letzte Spiele
         if not spiele.empty:
-            st.markdown("#### Letzte Spiele")
+            st.markdown("**Letzte Spiele**")
             for _, r in spiele.tail(8).iloc[::-1].iterrows():
                 gewonnen = (r["Spieler A"] == gew and r["Legs A"] > r["Legs B"]) or \
                            (r["Spieler B"] == gew and r["Legs B"] > r["Legs A"])
@@ -656,6 +655,11 @@ if "Rangliste" in menu:
                     f"<span style='color:#888;font-size:12px;'>Spieltag {r['Datum']}</span>",
                     unsafe_allow_html=True
                 )
+ 
+    gew = st.session_state.ausgewaehlter_spieler
+    if gew and gew in df.index:
+        zeige_spieler_popup(gew, df, df_log, rang_liste)
+        st.session_state.ausgewaehlter_spieler = None
  
     st.markdown("------")
  
