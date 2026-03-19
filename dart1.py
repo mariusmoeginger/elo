@@ -647,9 +647,8 @@ if "Rangliste" in menu:
         key="profil_select",
         label_visibility="collapsed"
     )
-    if ausw != "– Spieler auswählen –":
-        st.session_state.ausgewaehlter_spieler = ausw
-        st.rerun()
+    if ausw and ausw != "– Spieler auswählen –":
+        zeige_spieler_popup(ausw, df, df_log, rang_liste)
  
     # Inaktive Spieler
     if not df_inaktiv.empty:
@@ -666,11 +665,6 @@ if "Rangliste" in menu:
                     st.markdown("<div style='padding:6px 0;text-align:center;color:#bbb;'>0</div>", unsafe_allow_html=True)
                 with col_pts:
                     st.markdown(f"<div style='padding:6px 0;text-align:right;color:#bbb;'>{START_ELO}</div>", unsafe_allow_html=True)
- 
-    gew = st.session_state.ausgewaehlter_spieler
-    if gew and gew in df.index:
-        zeige_spieler_popup(gew, df, df_log, rang_liste)
-        st.session_state.ausgewaehlter_spieler = None
  
     st.markdown("------")
  
