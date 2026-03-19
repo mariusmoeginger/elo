@@ -28,6 +28,7 @@ def get_supabase():
 # ---------------------
 # DATEIEN LADEN/SPEICHERN
 # ---------------------
+@st.cache_data(ttl=30)
 def lade_spieler():
     sb = get_supabase()
     res = sb.table("spieler").select("*").execute()
@@ -45,7 +46,9 @@ def speichere_spieler(df):
             "elo": int(row["Elo"]),
             "spiele": int(row["Spiele"])
         }).execute()
+    lade_spieler.clear()
  
+@st.cache_data(ttl=30)
 def lade_log():
     sb = get_supabase()
     res = sb.table("spiele_log").select("*").order("id").execute()
@@ -76,9 +79,9 @@ def speichere_log(df):
                 "elo_a": int(row["Elo A"]),
                 "elo_b": int(row["Elo B"])
             }).eq("id", int(row["id"])).execute()
+    lade_log.clear()
  
 def insert_spiel(datum, a, b, la, lb, avga, avgb):
-    # Neues Spiel einmalig einfügen, ID von Supabase zurückbekommen
     sb = get_supabase()
     sb.table("spiele_log").insert({
         "datum": datum,
@@ -91,22 +94,26 @@ def insert_spiel(datum, a, b, la, lb, avga, avgb):
         "elo_a": 0,
         "elo_b": 0
     }).execute()
+    lade_log.clear()
  
+# ---------------------
+# ELO-BERECHNUNG
 # ---------------------
 # ELO-BERECHNUNG
 # ---------------------
 def erwartung(a, b):
     return 1 / (1 + pow(10, (b - a) / 400))
  
-def berechne_elo_aus_log(df_log):
-    # Lädt frisch aus Supabase, berechnet Elos neu und updated nur die Elo-Deltas
-    df = lade_spieler()
+def _elo_kern(df_spieler, df_log):
+    """Reine Berechnung ohne Supabase-Zugriff. Gibt (df_spieler, df_log) zurück."""
+    df = df_spieler.copy()
     alle = pd.concat([df.index.to_series(), df_log["Spieler A"], df_log["Spieler B"]]).dropna().unique()
     for s in alle:
         if s not in df.index:
             df.loc[s] = {"Elo": START_ELO, "Spiele": 0}
     df["Elo"] = START_ELO
     df["Spiele"] = 0
+    df_log = df_log.copy()
  
     for i, row in df_log.iterrows():
         a, b = row["Spieler A"], row["Spieler B"]
@@ -117,43 +124,41 @@ def berechne_elo_aus_log(df_log):
         exp_a = erwartung(ea, eb)
         exp_b = erwartung(eb, ea)
         sa = 1 if la > lb else 0
-        sb = 1 - sa
+        sb_val = 1 - sa
  
         G = 1 + abs(la - lb) / 10
         D = min(1.3, 1 + abs(ea - eb) / 1200)
- 
-        if sa == 1:
-            M_a = 1 + 0.3 * (avga - 50) / 50
-        else:
-            M_a = 1 - 0.3 * (avga - 50) / 50
- 
-        if sb == 1:
-            M_b = 1 + 0.3 * (avgb - 50) / 50
-        else:
-            M_b = 1 - 0.3 * (avgb - 50) / 50
+        M_a = 1 + 0.3*(avga-50)/50 if sa==1 else 1 - 0.3*(avga-50)/50
+        M_b = 1 + 0.3*(avgb-50)/50 if sb_val==1 else 1 - 0.3*(avgb-50)/50
  
         delta_a = K_FAKTOR * G * D * (sa - exp_a) * M_a
-        delta_b = K_FAKTOR * G * D * (sb - exp_b) * M_b
+        delta_b = K_FAKTOR * G * D * (sb_val - exp_b) * M_b
  
         df.loc[a, "Elo"] = round(ea + delta_a)
         df.loc[b, "Elo"] = round(eb + delta_b)
         df_log.at[i, "Elo A"] = round(delta_a)
         df_log.at[i, "Elo B"] = round(delta_b)
- 
         df.loc[a, "Spiele"] += 1
         df.loc[b, "Spiele"] += 1
  
-    # Spieler-Elos speichern
-    speichere_spieler(df)
-    # Nur Elo-Deltas auf bestehenden Zeilen updaten (kein Insert!)
-    speichere_log(df_log)
     return df, df_log
+ 
+def berechne_elo_nur_lesen(df_log):
+    """Nur für Anzeige – kein Supabase-Schreibzugriff."""
+    df_spieler = lade_spieler()
+    return _elo_kern(df_spieler, df_log)
+ 
+def berechne_elo_aus_log(df_log):
+    """Berechnet Elos und speichert Ergebnisse in Supabase. Nur nach Datenänderungen aufrufen."""
+    df_spieler = lade_spieler()
+    df, df_log_neu = _elo_kern(df_spieler, df_log)
+    speichere_spieler(df)
+    speichere_log(df_log_neu)
+    return df, df_log_neu
  
  
 def log_spiel(a, b, la, lb, avga, avgb, spieltag):
-    # 1. Einmalig einfügen
     insert_spiel(spieltag, a, b, la, lb, avga, avgb)
-    # 2. Frisch laden (jetzt mit ID) und Elos neu berechnen
     df_log = lade_log()
     return berechne_elo_aus_log(df_log)
  
@@ -456,7 +461,7 @@ if "Rangliste" in menu:
     st.markdown("<h2 style='font-size:28px;'>🥇 Rangliste</h2>", unsafe_allow_html=True)
  
     df_log = lade_log()
-    df, df_log = berechne_elo_aus_log(df_log)
+    df, df_log = berechne_elo_nur_lesen(df_log)
     df = df.sort_values("Elo", ascending=False)
     rang_liste = list(df.index)
  
@@ -892,7 +897,7 @@ elif "Bestenlisten" in menu:
     st.subheader("🏅 Bestenlisten")
  
     df_log = lade_log()
-    df_sp, df_log = berechne_elo_aus_log(df_log)
+    df_sp, df_log = berechne_elo_nur_lesen(df_log)
  
     if df_log.empty:
         st.info("Noch keine Spiele eingetragen.")
