@@ -592,75 +592,59 @@ if "Rangliste" in menu:
     df_aktiv = df[df["Spiele"] > 0]
     df_inaktiv = df[df["Spiele"] == 0]
  
-    # Styling voor de rijen
-    st.markdown("""
-    <style>
-    div[data-testid="stButton"] > button {
-        text-align: left !important;
-        font-weight: 400 !important;
-        background: transparent !important;
-        border: none !important;
-        border-bottom: 1px solid #f0f0f0 !important;
-        border-radius: 0 !important;
-        padding: 8px 4px !important;
-        color: inherit !important;
-        box-shadow: none !important;
-        width: 100% !important;
-    }
-    div[data-testid="stButton"] > button:hover {
-        background: #f8f9ff !important;
-        border-bottom: 1px solid #dde !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
- 
-    # Header
-    st.markdown("""
-    <div style='display:flex;gap:0;border-bottom:2px solid #e0e0e0;padding-bottom:6px;margin-bottom:2px;'>
-        <div style='width:32px;font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;'>#</div>
-        <div style='flex:1;font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;'>Spieler</div>
-        <div style='width:90px;font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;text-align:right;'>Punkte</div>
-    </div>
-    """, unsafe_allow_html=True)
- 
+    # Rangliste als reine HTML-Tabelle
+    table_rows = ""
     for i, s in enumerate(df_aktiv.index):
         letzte = df_log[(df_log["Spieler A"] == s) | (df_log["Spieler B"] == s)].tail(3)
         form = sum([r["Elo A"] if r["Spieler A"] == s else r["Elo B"] for _, r in letzte.iterrows()])
         elo = int(df_aktiv.loc[s, "Elo"])
- 
         medal = ["🥇","🥈","🥉"][i] if i < 3 else f"{i+1}."
-        form_txt = f" +{int(form)}▲" if form > 0 else (f" {int(form)}▼" if form < 0 else "")
-        form_color = "green" if form > 0 else ("red" if form < 0 else "gray")
+        if form > 0:
+            form_html = f"<span style='color:green;font-size:80%;'> +{int(form)}▲</span>"
+        elif form < 0:
+            form_html = f"<span style='color:red;font-size:80%;'> {int(form)}▼</span>"
+        else:
+            form_html = ""
+        table_rows += f"""<tr style='border-bottom:1px solid #eee;'>
+            <td style='padding:10px 6px;width:36px;font-size:15px;'>{medal}</td>
+            <td style='padding:10px 6px;font-size:15px;'>{s}</td>
+            <td style='padding:10px 6px;text-align:right;font-size:14px;white-space:nowrap;'>{elo}{form_html}</td>
+        </tr>"""
  
-        # Alles in één button label als HTML
-        label = (
-            f"<span style='display:flex;width:100%;align-items:center;'>"
-            f"<span style='width:28px;font-size:13px;'>{medal}</span>"
-            f"<span style='flex:1;font-size:15px;'>{s}</span>"
-            f"<span style='width:90px;text-align:right;font-size:14px;'>"
-            f"{elo}"
-            f"<span style='color:{form_color};font-size:11px;'>{form_txt}</span>"
-            f"</span></span>"
-        )
+    st.markdown(f"""
+    <style>.rl-wrap{{width:100%;border-collapse:collapse;}}
+    .rl-wrap th{{font-size:11px;color:#888;font-weight:700;text-transform:uppercase;
+        letter-spacing:1px;padding:6px;border-bottom:2px solid #e0e0e0;}}</style>
+    <table class='rl-wrap'>
+        <thead><tr>
+            <th style='text-align:left;'>#</th>
+            <th style='text-align:left;'>Spieler</th>
+            <th style='text-align:right;'>Punkte</th>
+        </tr></thead>
+        <tbody>{table_rows}</tbody>
+    </table>""", unsafe_allow_html=True)
  
-        if st.button(label, key=f"pbtn_{s}", use_container_width=True):
-            zeige_spieler_popup(s, df, df_log, rang_liste)
+    # Spielerprofil per Selectbox
+    st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+    ausw = st.selectbox(
+        "Spielerprofil",
+        ["– Spieler auswählen –"] + list(df_aktiv.index),
+        key="profil_select"
+    )
+    if ausw and ausw != "– Spieler auswählen –":
+        zeige_spieler_popup(ausw, df, df_log, rang_liste)
  
     # Inaktive Spieler
     if not df_inaktiv.empty:
-        st.markdown("")
-        zeige_inaktiv = st.checkbox(f"Inaktive Spieler anzeigen ({len(df_inaktiv)})")
-        if zeige_inaktiv:
-            for s in df_inaktiv.index:
-                col_platz, col_name, col_sp, col_pts = st.columns([0.4, 3, 0.6, 1.2])
-                with col_platz:
-                    st.markdown("<div style='padding:6px 0;color:#bbb;'>–</div>", unsafe_allow_html=True)
-                with col_name:
-                    st.markdown(f"<div style='padding:6px 0;color:#aaa;'>{s}</div>", unsafe_allow_html=True)
-                with col_sp:
-                    st.markdown("<div style='padding:6px 0;text-align:center;color:#bbb;'>0</div>", unsafe_allow_html=True)
-                with col_pts:
-                    st.markdown(f"<div style='padding:6px 0;text-align:right;color:#bbb;'>{START_ELO}</div>", unsafe_allow_html=True)
+        if st.checkbox(f"Inaktive Spieler anzeigen ({len(df_inaktiv)})"):
+            inaktiv_rows = "".join([
+                f"<tr><td style='padding:8px 6px;color:#ccc;'>–</td>"
+                f"<td style='padding:8px 6px;color:#aaa;'>{s}</td>"
+                f"<td style='padding:8px 6px;text-align:right;color:#ccc;'>{START_ELO}</td></tr>"
+                for s in df_inaktiv.index
+            ])
+            st.markdown(f"<table class='rl-wrap'><tbody>{inaktiv_rows}</tbody></table>",
+                        unsafe_allow_html=True)
  
     st.markdown("------")
  
