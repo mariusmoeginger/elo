@@ -592,63 +592,59 @@ if "Rangliste" in menu:
     df_aktiv = df[df["Spiele"] > 0]
     df_inaktiv = df[df["Spiele"] == 0]
  
-    # Komplette Tabelle als HTML – keine Streamlit-Spalten
-    table_rows = ""
+    # Styling voor de rijen
+    st.markdown("""
+    <style>
+    div[data-testid="stButton"] > button {
+        text-align: left !important;
+        font-weight: 400 !important;
+        background: transparent !important;
+        border: none !important;
+        border-bottom: 1px solid #f0f0f0 !important;
+        border-radius: 0 !important;
+        padding: 8px 4px !important;
+        color: inherit !important;
+        box-shadow: none !important;
+        width: 100% !important;
+    }
+    div[data-testid="stButton"] > button:hover {
+        background: #f8f9ff !important;
+        border-bottom: 1px solid #dde !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+ 
+    # Header
+    st.markdown("""
+    <div style='display:flex;gap:0;border-bottom:2px solid #e0e0e0;padding-bottom:6px;margin-bottom:2px;'>
+        <div style='width:32px;font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;'>#</div>
+        <div style='flex:1;font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;'>Spieler</div>
+        <div style='width:90px;font-size:11px;color:#888;font-weight:700;text-transform:uppercase;letter-spacing:1px;text-align:right;'>Punkte</div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
     for i, s in enumerate(df_aktiv.index):
         letzte = df_log[(df_log["Spieler A"] == s) | (df_log["Spieler B"] == s)].tail(3)
         form = sum([r["Elo A"] if r["Spieler A"] == s else r["Elo B"] for _, r in letzte.iterrows()])
         elo = int(df_aktiv.loc[s, "Elo"])
-        spiele_count = int(df_aktiv.loc[s, "Spiele"])
  
-        if form > 0:
-            form_html = f"<span style='color:green;font-size:80%;'>&nbsp;+{int(form)} ▲</span>"
-        elif form < 0:
-            form_html = f"<span style='color:red;font-size:80%;'>&nbsp;{int(form)} ▼</span>"
-        else:
-            form_html = ""
+        medal = ["🥇","🥈","🥉"][i] if i < 3 else f"{i+1}."
+        form_txt = f" +{int(form)}▲" if form > 0 else (f" {int(form)}▼" if form < 0 else "")
+        form_color = "green" if form > 0 else ("red" if form < 0 else "gray")
  
-        platz_color = "goldenrod" if i < 3 else "#555"
-        row_bg = "#fafbff" if i % 2 == 0 else "#ffffff"
+        # Alles in één button label als HTML
+        label = (
+            f"<span style='display:flex;width:100%;align-items:center;'>"
+            f"<span style='width:28px;font-size:13px;'>{medal}</span>"
+            f"<span style='flex:1;font-size:15px;'>{s}</span>"
+            f"<span style='width:90px;text-align:right;font-size:14px;'>"
+            f"{elo}"
+            f"<span style='color:{form_color};font-size:11px;'>{form_txt}</span>"
+            f"</span></span>"
+        )
  
-        table_rows += f"""
-        <tr style='background:{row_bg};'>
-            <td style='text-align:center;color:{platz_color};font-weight:600;padding:10px 8px;width:36px;'>{i+1}</td>
-            <td style='text-align:left;padding:10px 8px;font-weight:700;font-size:15px;'>{s}</td>
-            <td style='text-align:center;color:#777;padding:10px 8px;width:56px;'>{spiele_count}</td>
-            <td style='text-align:right;padding:10px 8px;width:100px;font-weight:500;'>{elo}{form_html}</td>
-        </tr>"""
- 
-    st.markdown(f"""
-    <style>
-    .rl-table {{ width:100%;border-collapse:collapse;font-size:15px; }}
-    .rl-table th {{
-        font-size:11px;color:#888;font-weight:700;text-transform:uppercase;
-        letter-spacing:1px;padding:8px;border-bottom:2px solid #e0e0e0;
-    }}
-    .rl-table tr {{ border-bottom:1px solid #eee; }}
-    .rl-table tr:last-child {{ border-bottom:none; }}
-    </style>
-    <table class='rl-table'>
-        <thead><tr>
-            <th style='text-align:center;'>#</th>
-            <th style='text-align:left;'>Spieler</th>
-            <th style='text-align:center;'>Spiele</th>
-            <th style='text-align:right;'>Punkte</th>
-        </tr></thead>
-        <tbody>{table_rows}</tbody>
-    </table>
-    """, unsafe_allow_html=True)
- 
-    # Spieler antippen → Profil öffnen
-    st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
-    ausw = st.selectbox(
-        "Spielerprofil anzeigen",
-        ["– Spieler auswählen –"] + list(df_aktiv.index),
-        key="profil_select",
-        label_visibility="collapsed"
-    )
-    if ausw and ausw != "– Spieler auswählen –":
-        zeige_spieler_popup(ausw, df, df_log, rang_liste)
+        if st.button(label, key=f"pbtn_{s}", use_container_width=True):
+            zeige_spieler_popup(s, df, df_log, rang_liste)
  
     # Inaktive Spieler
     if not df_inaktiv.empty:
