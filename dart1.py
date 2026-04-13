@@ -64,7 +64,6 @@ def lade_log():
     return df
  
 def speichere_log(df):
-    # Nur bestehende Zeilen (mit ID) updaten – niemals neu einfügen
     sb = get_supabase()
     for _, row in df.iterrows():
         if "id" in df.columns and pd.notna(row.get("id")):
@@ -97,7 +96,60 @@ def insert_spiel(datum, a, b, la, lb, avga, avgb):
     lade_log.clear()
  
 # ---------------------
-# ELO-BERECHNUNG
+# AKTIVER SPIELPLAN IN SUPABASE (für geräteübergreifende Sichtbarkeit)
+# ---------------------
+def lade_spielplan_db():
+    """Lädt den aktiven Spielplan aus Supabase. Gibt None zurück wenn keiner existiert."""
+    try:
+        sb = get_supabase()
+        res = sb.table("aktiver_spielplan").select("*").eq("id", 1).execute()
+        if not res.data:
+            return None
+        row = res.data[0]
+        spielplan = row["spielplan"] if isinstance(row["spielplan"], list) else []
+        ergebnisse_raw = row.get("ergebnisse") or {}
+        ergebnisse = {int(k): v for k, v in ergebnisse_raw.items()}
+        locked_raw = row.get("locked") or []
+        locked = [int(x) for x in locked_raw]
+        reihenfolge_raw = row.get("reihenfolge") or list(range(len(spielplan)))
+        reihenfolge = [int(x) for x in reihenfolge_raw]
+        return {
+            "spielplan": spielplan,
+            "spieltag": row.get("spieltag", ""),
+            "extra_spieler": row.get("extra_spieler"),
+            "ergebnisse": ergebnisse,
+            "locked": locked,
+            "reihenfolge": reihenfolge
+        }
+    except Exception as e:
+        st.warning(f"Spielplan konnte nicht geladen werden: {e}")
+        return None
+ 
+def speichere_spielplan_db(spielplan, spieltag, extra_spieler, ergebnisse, locked, reihenfolge):
+    """Speichert den aktiven Spielplan in Supabase (upsert auf id=1)."""
+    try:
+        sb = get_supabase()
+        ergebnisse_str = {str(k): v for k, v in ergebnisse.items()}
+        sb.table("aktiver_spielplan").upsert({
+            "id": 1,
+            "spielplan": spielplan,
+            "spieltag": str(spieltag),
+            "extra_spieler": extra_spieler,
+            "ergebnisse": ergebnisse_str,
+            "locked": [int(x) for x in locked],
+            "reihenfolge": [int(x) for x in reihenfolge]
+        }).execute()
+    except Exception as e:
+        st.error(f"Fehler beim Speichern des Spielplans: {e}")
+ 
+def loesche_spielplan_db():
+    """Löscht den aktiven Spielplan aus Supabase."""
+    try:
+        sb = get_supabase()
+        sb.table("aktiver_spielplan").delete().eq("id", 1).execute()
+    except Exception as e:
+        st.error(f"Fehler beim Löschen des Spielplans: {e}")
+ 
 # ---------------------
 # ELO-BERECHNUNG
 # ---------------------
@@ -105,7 +157,6 @@ def erwartung(a, b):
     return 1 / (1 + pow(10, (b - a) / 400))
  
 def _elo_kern(df_spieler, df_log):
-    """Reine Berechnung ohne Supabase-Zugriff. Gibt (df_spieler, df_log) zurück."""
     df = df_spieler.copy()
     alle = pd.concat([df.index.to_series(), df_log["Spieler A"], df_log["Spieler B"]]).dropna().unique()
     for s in alle:
@@ -144,18 +195,15 @@ def _elo_kern(df_spieler, df_log):
     return df, df_log
  
 def berechne_elo_nur_lesen(df_log):
-    """Nur für Anzeige – kein Supabase-Schreibzugriff."""
     df_spieler = lade_spieler()
     return _elo_kern(df_spieler, df_log)
  
 def berechne_elo_aus_log(df_log):
-    """Berechnet Elos und speichert Ergebnisse in Supabase. Nur nach Datenänderungen aufrufen."""
     df_spieler = lade_spieler()
     df, df_log_neu = _elo_kern(df_spieler, df_log)
     speichere_spieler(df)
     speichere_log(df_log_neu)
     return df, df_log_neu
- 
  
 def log_spiel(a, b, la, lb, avga, avgb, spieltag):
     insert_spiel(spieltag, a, b, la, lb, avga, avgb)
@@ -185,7 +233,6 @@ def fmt_elo(v):
  
 # ---------------------
 # ELO-VERLAUF BERECHNEN
-# Gibt DataFrame zurück: Spieler → Elo nach jedem Spieltag
 # ---------------------
 def berechne_elo_verlauf(df_log):
     if df_log.empty:
@@ -383,7 +430,7 @@ def zeige_spieltag_zusammenfassung(spieltag_nr, df_log_gesamt):
             st.markdown("Keine Underdog-Siege in diesem Spieltag.")
  
 # ---------------------
-# SPIELERPROFIL POPUP (muss auf oberster Ebene definiert sein)
+# SPIELERPROFIL POPUP
 # ---------------------
 @st.dialog("Spielerprofil", width="large")
 def zeige_spieler_popup(gew, df, df_log, rang_liste):
@@ -514,20 +561,27 @@ st.set_page_config(
     initial_sidebar_state=st.session_state.get("sidebar_state", "expanded")
 )
  
+# ---------------------
+# BACKSPACE-SCHUTZ (verhindert Browser-Rücknavigation)
+# ---------------------
+st.markdown("""
+<script>
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Backspace') {
+        var tag = e.target.tagName.toUpperCase();
+        var editable = e.target.isContentEditable;
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT' && !editable) {
+            e.preventDefault();
+        }
+    }
+});
+</script>
+""", unsafe_allow_html=True)
+ 
 if "menu" not in st.session_state:
     st.session_state.menu = "Rangliste"
 if "edit_index" not in st.session_state:
     st.session_state.edit_index = None
-if "spielplan" not in st.session_state:
-    st.session_state.spielplan = None
-if "spielplan_reihenfolge" not in st.session_state:
-    st.session_state.spielplan_reihenfolge = None
-if "spielplan_extra" not in st.session_state:
-    st.session_state.spielplan_extra = None
-if "spielplan_spieltag" not in st.session_state:
-    st.session_state.spielplan_spieltag = ""
-if "spielplan_ergebnisse" not in st.session_state:
-    st.session_state.spielplan_ergebnisse = {}
 if "letzter_spieltag" not in st.session_state:
     st.session_state.letzter_spieltag = None
 if "zeige_zusammenfassung" not in st.session_state:
@@ -536,6 +590,8 @@ if "zusammenfassung_spieltag" not in st.session_state:
     st.session_state.zusammenfassung_spieltag = None
 if "ausgewaehlter_spieler" not in st.session_state:
     st.session_state.ausgewaehlter_spieler = None
+if "spiel_submitted" not in st.session_state:
+    st.session_state.spiel_submitted = False
  
 # ---------------------
 # HEADER
@@ -588,11 +644,9 @@ if "Rangliste" in menu:
     df = df.sort_values("Elo", ascending=False)
     rang_liste = list(df.index)
  
-    # Aktive/Inaktive trennen
     df_aktiv = df[df["Spiele"] > 0]
     df_inaktiv = df[df["Spiele"] == 0]
  
-    # Rangliste als reine HTML-Tabelle
     table_rows = ""
     for i, s in enumerate(df_aktiv.index):
         letzte = df_log[(df_log["Spieler A"] == s) | (df_log["Spieler B"] == s)].tail(3)
@@ -624,7 +678,6 @@ if "Rangliste" in menu:
         <tbody>{table_rows}</tbody>
     </table>""", unsafe_allow_html=True)
  
-    # Spielerprofil per Selectbox
     st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
     ausw = st.selectbox(
         "Spielerprofil",
@@ -634,7 +687,6 @@ if "Rangliste" in menu:
     if ausw and ausw != "– Spieler auswählen –":
         zeige_spieler_popup(ausw, df, df_log, rang_liste)
  
-    # Inaktive Spieler
     if not df_inaktiv.empty:
         if st.checkbox(f"Inaktive Spieler anzeigen ({len(df_inaktiv)})"):
             inaktiv_rows = "".join([
@@ -775,6 +827,7 @@ elif "Vergangene Spiele" in menu:
                         "legs_a": int(la), "legs_b": int(lb),
                         "avg_a": float(avga), "avg_b": float(avgb)
                     }).eq("id", idx).execute()
+                    lade_log.clear()
                     berechne_elo_aus_log(lade_log())
                     st.success("Spiel aktualisiert!")
                     st.session_state.edit_index = None
@@ -783,6 +836,7 @@ elif "Vergangene Spiele" in menu:
                 if delete:
                     sb = get_supabase()
                     sb.table("spiele_log").delete().eq("id", idx).execute()
+                    lade_log.clear()
                     berechne_elo_aus_log(lade_log())
                     st.success("Spiel gelöscht!")
                     st.session_state.edit_index = None
@@ -825,7 +879,8 @@ elif "Head-to-Head" in menu:
             legs_p2 = sum(h2h.apply(lambda r: r["Legs A"] if r["Spieler A"] == p2 else r["Legs B"], axis=1))
  
             elo_p1 = sum(h2h.apply(lambda r: int(r["Elo A"]) if r["Spieler A"] == p1 else int(r["Elo B"]), axis=1))
-            elo_p2 = sum(h2h.apply(lambda r: int(r["Elo A"]) if r["Spieler A"] == p2 else int(r["Elo B"]), axis=1))            # Kopfzeile
+            elo_p2 = sum(h2h.apply(lambda r: int(r["Elo A"]) if r["Spieler A"] == p2 else int(r["Elo B"]), axis=1))
+ 
             st.markdown(f"""
             <div style='background:linear-gradient(135deg,#1a1a2e,#16213e);padding:20px;border-radius:12px;margin-bottom:20px;border:1px solid #2a3555;'>
                 <div style='display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px;'>
@@ -846,7 +901,6 @@ elif "Head-to-Head" in menu:
             </div>
             """, unsafe_allow_html=True)
  
-            # Statistik-Vergleich
             def stat_row(label, val1, val2, higher_is_better=True):
                 besser1 = (val1 > val2) if higher_is_better else (val1 < val2)
                 besser2 = (val2 > val1) if higher_is_better else (val2 < val1)
@@ -893,7 +947,6 @@ elif "Bestenlisten" in menu:
     else:
         alle_spieler = list(df_sp.index)
  
-        # --- Statistiken berechnen ---
         stats = {}
         for s in alle_spieler:
             spiele = df_log[(df_log["Spieler A"] == s) | (df_log["Spieler B"] == s)]
@@ -968,7 +1021,6 @@ elif "Bestenlisten" in menu:
                     unsafe_allow_html=True
                 )
  
-        # Elo-Verlauf aller Spieler
         st.markdown("---")
         st.markdown("#### Elo-Verlauf aller Spieler")
         verlauf_df = berechne_elo_verlauf(df_log)
@@ -1027,10 +1079,13 @@ elif "Spieler anlegen ➕" in menu:
 elif "Auslosung 🎲" in menu:
     st.subheader("🎲 Spieltags-Auslosung")
  
-    df_spieler = list(lade_spieler().index)
+    df_spieler_liste = list(lade_spieler().index)
  
-    if st.session_state.spielplan is None:
+    # Aktiven Spielplan aus Supabase laden (geräteübergreifend)
+    db_plan = lade_spielplan_db()
  
+    if db_plan is None:
+        # ── Kein aktiver Spielplan ──
         if st.session_state.zeige_zusammenfassung and st.session_state.zusammenfassung_spieltag:
             st.success(f"✅ Spieltag {st.session_state.zusammenfassung_spieltag} wurde in die Rangliste übernommen!")
             st.markdown("---")
@@ -1043,7 +1098,7 @@ elif "Auslosung 🎲" in menu:
                 st.rerun()
         else:
             st.markdown("### Anwesende Spieler auswählen")
-            anwesend = st.multiselect("Spieler", df_spieler)
+            anwesend = st.multiselect("Spieler", df_spieler_liste)
             gegner_anzahl = st.slider("Anzahl Gegner pro Spieler", min_value=3, max_value=5, value=4)
             spieltag_nr = st.text_input("Spieltag-Nummer (z.B. 3)")
  
@@ -1054,23 +1109,28 @@ elif "Auslosung 🎲" in menu:
                     st.error("Bitte Spieltag-Nummer eingeben.")
                 else:
                     ergebnis, extra_spieler = auslosen(anwesend, gegner_anzahl)
- 
                     if ergebnis is None:
                         st.error("Keine gültige Auslosung möglich – bitte andere Gegneranzahl oder Spieleranzahl wählen.")
                     else:
                         spielplan = erstelle_spielplan(ergebnis)
-                        st.session_state.spielplan = spielplan
-                        st.session_state.spielplan_reihenfolge = list(range(len(spielplan)))
-                        st.session_state.spielplan_extra = extra_spieler
-                        st.session_state.spielplan_spieltag = spieltag_nr.strip()
-                        st.session_state.spielplan_ergebnisse = {}
+                        speichere_spielplan_db(
+                            spielplan=spielplan,
+                            spieltag=spieltag_nr.strip(),
+                            extra_spieler=extra_spieler,
+                            ergebnisse={},
+                            locked=[],
+                            reihenfolge=list(range(len(spielplan)))
+                        )
                         st.rerun()
  
     else:
-        spielplan = st.session_state.spielplan
-        reihenfolge = st.session_state.spielplan_reihenfolge
-        extra_spieler = st.session_state.spielplan_extra
-        spieltag_nr = st.session_state.spielplan_spieltag
+        # ── Aktiver Spielplan vorhanden ──
+        spielplan  = db_plan["spielplan"]
+        reihenfolge = db_plan["reihenfolge"]
+        extra_spieler = db_plan["extra_spieler"]
+        spieltag_nr   = db_plan["spieltag"]
+        ergebnisse    = db_plan["ergebnisse"]   # {int_idx: {legs_a, legs_b, avg_a, avg_b}}
+        locked        = set(db_plan["locked"])   # set of int indices
  
         st.markdown(f"### Spieltag {spieltag_nr}")
  
@@ -1080,105 +1140,177 @@ elif "Auslosung 🎲" in menu:
         pw = st.text_input("Passwort zum Eintragen", type="password", key="pw_spielplan")
  
         if pw == PASSWORT:
-            st.caption("🗑 entfernt ein Spiel aus dem Plan.")
+            # ── Admin-Ansicht: Eingabe + Sperren ──
+            st.caption("🔒 sperrt ein eingetipptes Ergebnis (grau). 🔓 entsperrt es wieder. 🗑 entfernt das Spiel.")
  
+            # Spaltenheader
             st.markdown("""
-            <div style='display:grid;grid-template-columns:3fr 3fr 2fr 2fr 2fr 2fr 1fr;gap:8px;margin-bottom:4px;'>
-                <div></div>
-                <div></div>
-                <div style='grid-column:3/5;text-align:center;font-weight:bold;text-decoration:underline;'>Legs</div>
-                <div style='grid-column:5/7;text-align:center;font-weight:bold;text-decoration:underline;'>Avg</div>
-                <div></div>
+            <div style='display:grid;grid-template-columns:3fr 3fr 2fr 2fr 2fr 2fr 1fr 1fr;gap:6px;margin-bottom:2px;'>
+                <div></div><div></div>
+                <div style='grid-column:3/5;text-align:center;font-weight:bold;text-decoration:underline;font-size:13px;'>Legs</div>
+                <div style='grid-column:5/7;text-align:center;font-weight:bold;text-decoration:underline;font-size:13px;'>Avg</div>
+                <div></div><div></div>
             </div>
             """, unsafe_allow_html=True)
  
             ergebnisse_temp = {}
-            zu_loeschen = None
+            aktion = None  # ("lock"|"unlock"|"delete", orig_idx)
  
             for orig_idx in reihenfolge:
-                spiel = spielplan[orig_idx]
-                a, b = spiel[0], spiel[1]
-                vorher = st.session_state.spielplan_ergebnisse.get(orig_idx, {})
-                cols = st.columns([3, 3, 2, 2, 2, 2, 1])
+                spiel  = spielplan[orig_idx]
+                a, b   = spiel[0], spiel[1]
+                vorher = ergebnisse.get(orig_idx, {})
+                ist_gesperrt = orig_idx in locked
  
-                with cols[0]:
-                    st.markdown(f"**{a}**")
-                with cols[1]:
-                    st.markdown(f"**{b}**")
-                with cols[2]:
-                    la = st.number_input("", min_value=0, step=1,
-                        value=vorher.get("legs_a", 0),
-                        key=f"la_{orig_idx}", label_visibility="collapsed")
-                with cols[3]:
-                    lb = st.number_input("", min_value=0, step=1,
-                        value=vorher.get("legs_b", 0),
-                        key=f"lb_{orig_idx}", label_visibility="collapsed")
-                with cols[4]:
-                    avga = st.number_input("", min_value=0.0, step=0.1,
-                        value=vorher.get("avg_a", 50.0),
-                        key=f"avga_{orig_idx}", label_visibility="collapsed")
-                with cols[5]:
-                    avgb = st.number_input("", min_value=0.0, step=0.1,
-                        value=vorher.get("avg_b", 50.0),
-                        key=f"avgb_{orig_idx}", label_visibility="collapsed")
-                with cols[6]:
-                    if st.button("🗑", key=f"del_{orig_idx}"):
-                        zu_loeschen = orig_idx
+                if ist_gesperrt:
+                    # Gesperrte Zeile: kompakt + grau, kein Input
+                    la   = vorher.get("legs_a", 0)
+                    lb   = vorher.get("legs_b", 0)
+                    avga = vorher.get("avg_a", 50.0)
+                    avgb = vorher.get("avg_b", 50.0)
+                    cols = st.columns([6, 1, 1])
+                    with cols[0]:
+                        st.markdown(
+                            f"<div style='background:#2a2a2a;border-radius:6px;padding:8px 10px;"
+                            f"color:#888;font-size:14px;'>✅ <b>{a}</b> {int(la)}:{int(lb)} <b>{b}</b>"
+                            f" &nbsp;·&nbsp; Avg {avga:.1f} / {avgb:.1f}</div>",
+                            unsafe_allow_html=True
+                        )
+                    with cols[1]:
+                        if st.button("🔓", key=f"unlock_{orig_idx}", help="Entsperren"):
+                            aktion = ("unlock", orig_idx)
+                    with cols[2]:
+                        if st.button("🗑", key=f"del_{orig_idx}", help="Entfernen"):
+                            aktion = ("delete", orig_idx)
+                    ergebnisse_temp[orig_idx] = {"legs_a": la, "legs_b": lb, "avg_a": avga, "avg_b": avgb}
  
-                ergebnisse_temp[orig_idx] = {
-                    "legs_a": la, "legs_b": lb, "avg_a": avga, "avg_b": avgb
-                }
+                else:
+                    # Normale Eingabe-Zeile
+                    cols = st.columns([3, 3, 2, 2, 2, 2, 1, 1])
+                    with cols[0]:
+                        st.markdown(f"**{a}**")
+                    with cols[1]:
+                        st.markdown(f"**{b}**")
+                    with cols[2]:
+                        la = st.number_input("", min_value=0, step=1,
+                            value=vorher.get("legs_a", 0),
+                            key=f"la_{orig_idx}", label_visibility="collapsed")
+                    with cols[3]:
+                        lb = st.number_input("", min_value=0, step=1,
+                            value=vorher.get("legs_b", 0),
+                            key=f"lb_{orig_idx}", label_visibility="collapsed")
+                    with cols[4]:
+                        avga = st.number_input("", min_value=0.0, step=0.1,
+                            value=vorher.get("avg_a", 50.0),
+                            key=f"avga_{orig_idx}", label_visibility="collapsed")
+                    with cols[5]:
+                        avgb = st.number_input("", min_value=0.0, step=0.1,
+                            value=vorher.get("avg_b", 50.0),
+                            key=f"avgb_{orig_idx}", label_visibility="collapsed")
+                    with cols[6]:
+                        if st.button("🔒", key=f"lock_{orig_idx}", help="Sperren"):
+                            aktion = ("lock", orig_idx)
+                    with cols[7]:
+                        if st.button("🗑", key=f"del_{orig_idx}", help="Entfernen"):
+                            aktion = ("delete", orig_idx)
+                    ergebnisse_temp[orig_idx] = {"legs_a": la, "legs_b": lb, "avg_a": avga, "avg_b": avgb}
  
-            if zu_loeschen is not None:
-                neue_reihenfolge = [x for x in reihenfolge if x != zu_loeschen]
-                neue_ergebnisse = {k: v for k, v in ergebnisse_temp.items() if k != zu_loeschen}
-                st.session_state.spielplan_reihenfolge = neue_reihenfolge
-                st.session_state.spielplan_ergebnisse = neue_ergebnisse
+            # ── Aktionen verarbeiten (Lock / Unlock / Delete) ──
+            if aktion is not None:
+                art, idx_a = aktion
+                if art == "lock":
+                    neue_locked = list(locked) + [idx_a]
+                    speichere_spielplan_db(spielplan, spieltag_nr, extra_spieler,
+                                           ergebnisse_temp, neue_locked, reihenfolge)
+                elif art == "unlock":
+                    neue_locked = [x for x in locked if x != idx_a]
+                    speichere_spielplan_db(spielplan, spieltag_nr, extra_spieler,
+                                           ergebnisse_temp, neue_locked, reihenfolge)
+                elif art == "delete":
+                    neue_reihenfolge = [x for x in reihenfolge if x != idx_a]
+                    neue_ergebnisse  = {k: v for k, v in ergebnisse_temp.items() if k != idx_a}
+                    neue_locked      = [x for x in locked if x != idx_a]
+                    speichere_spielplan_db(spielplan, spieltag_nr, extra_spieler,
+                                           neue_ergebnisse, neue_locked, neue_reihenfolge)
                 st.rerun()
+ 
+            st.markdown("---")
+ 
+            # Zwischenspeichern-Button (speichert aktuelle Eingaben ohne Abzuschließen)
+            if st.button("💾 Ergebnisse zwischenspeichern"):
+                speichere_spielplan_db(spielplan, spieltag_nr, extra_spieler,
+                                       ergebnisse_temp, list(locked), reihenfolge)
+                st.success("Zwischenstand gespeichert – andere Geräte sehen jetzt den aktuellen Stand.")
  
             st.markdown("---")
             col_submit, col_reset = st.columns([1, 1])
  
             with col_submit:
                 if st.button("✅ In Rangliste übernehmen"):
-                    unvollstaendig = []
-                    for orig_idx in reihenfolge:
-                        e = ergebnisse_temp[orig_idx]
-                        if e["legs_a"] == 0 and e["legs_b"] == 0:
-                            spiel = spielplan[orig_idx]
-                            unvollstaendig.append(f"{spiel[0]} vs {spiel[1]}")
- 
-                    if unvollstaendig:
-                        st.warning(f"Noch keine Ergebnisse bei: {', '.join(unvollstaendig)}")
+                    # ── Schutz vor Doppel-Eintrag ──
+                    df_log_check = lade_log()
+                    if not df_log_check.empty and str(spieltag_nr) in df_log_check["Datum"].astype(str).values:
+                        st.error(
+                            f"⚠️ Spieltag {spieltag_nr} ist bereits in der Datenbank! "
+                            f"Bitte unter 'Vergangene Spiele' prüfen."
+                        )
                     else:
-                        # Jedes Spiel einmalig einfügen
+                        unvollstaendig = []
                         for orig_idx in reihenfolge:
-                            spiel = spielplan[orig_idx]
-                            a, b = spiel[0], spiel[1]
                             e = ergebnisse_temp[orig_idx]
-                            insert_spiel(spieltag_nr, a, b, e["legs_a"], e["legs_b"], e["avg_a"], e["avg_b"])
+                            if e["legs_a"] == 0 and e["legs_b"] == 0:
+                                spiel = spielplan[orig_idx]
+                                unvollstaendig.append(f"{spiel[0]} vs {spiel[1]}")
  
-                        # Frisch laden und Elos berechnen
-                        berechne_elo_aus_log(lade_log())
+                        if unvollstaendig:
+                            st.warning(f"Noch keine Ergebnisse bei: {', '.join(unvollstaendig)}")
+                        else:
+                            for orig_idx in reihenfolge:
+                                spiel = spielplan[orig_idx]
+                                a_s, b_s = spiel[0], spiel[1]
+                                e = ergebnisse_temp[orig_idx]
+                                insert_spiel(spieltag_nr, a_s, b_s,
+                                             e["legs_a"], e["legs_b"],
+                                             e["avg_a"], e["avg_b"])
  
-                        st.session_state.letzter_spieltag = spieltag_nr
-                        st.session_state.zeige_zusammenfassung = True
-                        st.session_state.zusammenfassung_spieltag = spieltag_nr
-                        st.session_state.spielplan = None
-                        st.session_state.spielplan_reihenfolge = None
-                        st.session_state.spielplan_extra = None
-                        st.session_state.spielplan_spieltag = ""
-                        st.session_state.spielplan_ergebnisse = {}
-                        st.rerun()
+                            berechne_elo_aus_log(lade_log())
+                            loesche_spielplan_db()
+ 
+                            st.session_state.zeige_zusammenfassung = True
+                            st.session_state.zusammenfassung_spieltag = spieltag_nr
+                            st.rerun()
  
             with col_reset:
                 if st.button("🗑 Spielplan verwerfen"):
-                    st.session_state.spielplan = None
-                    st.session_state.spielplan_reihenfolge = None
-                    st.session_state.spielplan_extra = None
-                    st.session_state.spielplan_spieltag = ""
-                    st.session_state.spielplan_ergebnisse = {}
+                    loesche_spielplan_db()
                     st.rerun()
+ 
+        else:
+            # ── Nur-Lese-Ansicht (kein Passwort) ──
+            st.info(f"📋 Aktiver Spielplan für **Spieltag {spieltag_nr}** — Passwort eingeben zum Bearbeiten.")
+            st.markdown("---")
+ 
+            for orig_idx in reihenfolge:
+                spiel = spielplan[orig_idx]
+                a, b  = spiel[0], spiel[1]
+                vorher = ergebnisse.get(orig_idx, {})
+                ist_gesperrt = orig_idx in locked
+                la = vorher.get("legs_a", 0)
+                lb = vorher.get("legs_b", 0)
+ 
+                if ist_gesperrt:
+                    ergebnis_str = f"→ **{int(la)}:{int(lb)}**"
+                    st.markdown(
+                        f"✅ ~~{a}~~ vs ~~{b}~~ &nbsp; {ergebnis_str}",
+                        unsafe_allow_html=True
+                    )
+                elif la > 0 or lb > 0:
+                    st.markdown(f"⏳ **{a}** vs **{b}** &nbsp; → {int(la)}:{int(lb)} *(nicht gesperrt)*")
+                else:
+                    st.markdown(f"⏳ **{a}** vs **{b}**")
+ 
+            if st.button("🔄 Aktualisieren"):
+                st.rerun()
  
 # ---------------------
 # SPIELTAGE
@@ -1232,3 +1364,10 @@ elif "Admin 🔐" in menu:
         if st.button("🔄 Alle Elos neu berechnen"):
             berechne_elo_aus_log(lade_log())
             st.success("Elos wurden neu berechnet!")
+ 
+        st.markdown("---")
+        st.markdown("### Aktiven Spielplan zurücksetzen")
+        st.caption("Löscht den aktuell laufenden Spielplan aus der Datenbank (z.B. nach Fehler).")
+        if st.button("🗑 Spielplan in DB löschen"):
+            loesche_spielplan_db()
+            st.success("Spielplan gelöscht.")
