@@ -97,10 +97,9 @@ def insert_spiel(datum, a, b, la, lb, avga, avgb):
     lade_log.clear()
  
 # ---------------------
-# AKTIVER SPIELPLAN IN SUPABASE (für geräteübergreifende Sichtbarkeit)
+# AKTIVER SPIELPLAN IN SUPABASE
 # ---------------------
 def lade_spielplan_db():
-    """Lädt den aktiven Spielplan aus Supabase. Gibt None zurück wenn keiner existiert."""
     try:
         sb = get_supabase()
         res = sb.table("aktiver_spielplan").select("*").eq("id", 1).execute()
@@ -127,7 +126,6 @@ def lade_spielplan_db():
         return None
  
 def speichere_spielplan_db(spielplan, spieltag, extra_spieler, ergebnisse, locked, reihenfolge):
-    """Speichert den aktiven Spielplan in Supabase (upsert auf id=1)."""
     try:
         sb = get_supabase()
         ergebnisse_str = {str(k): v for k, v in ergebnisse.items()}
@@ -144,7 +142,6 @@ def speichere_spielplan_db(spielplan, spieltag, extra_spieler, ergebnisse, locke
         st.error(f"Fehler beim Speichern des Spielplans: {e}")
  
 def loesche_spielplan_db():
-    """Löscht den aktiven Spielplan aus Supabase."""
     try:
         sb = get_supabase()
         sb.table("aktiver_spielplan").delete().eq("id", 1).execute()
@@ -553,6 +550,895 @@ def zeige_spieler_popup(gew, df, df_log, rang_liste):
                 unsafe_allow_html=True
             )
  
+# =====================================================
+# TURNIER
+# =====================================================
+ 
+TURNIER_BOARDS = 4
+ 
+# --- Supabase-Hilfsfunktionen ---
+ 
+@st.cache_data(ttl=10)
+def lade_turnier():
+    try:
+        sb = get_supabase()
+        res = sb.table("turniere").select("*").eq("id", 1).execute()
+        if not res.data:
+            return None
+        row = res.data[0]
+        return {
+            "name": row.get("name", "Turnier"),
+            "status": row.get("status", "setup"),
+            "config": row.get("config") or {},
+            "gruppen": row.get("gruppen") or {},
+            "gruppen_spiele": row.get("gruppen_spiele") or [],
+            "ko_spiele": row.get("ko_spiele") or [],
+            "qualifizierte": row.get("qualifizierte") or {}
+        }
+    except Exception:
+        return None
+ 
+def speichere_turnier(data):
+    sb = get_supabase()
+    sb.table("turniere").upsert({
+        "id": 1,
+        "name": data.get("name", "Turnier"),
+        "status": data.get("status", "setup"),
+        "config": data.get("config", {}),
+        "gruppen": data.get("gruppen", {}),
+        "gruppen_spiele": data.get("gruppen_spiele", []),
+        "ko_spiele": data.get("ko_spiele", []),
+        "qualifizierte": data.get("qualifizierte", {})
+    }).execute()
+    lade_turnier.clear()
+ 
+def loesche_turnier():
+    sb = get_supabase()
+    sb.table("turniere").delete().eq("id", 1).execute()
+    lade_turnier.clear()
+ 
+# --- Logik ---
+ 
+def t_erstelle_gruppen(teilnehmer, n_gruppen):
+    zuf = teilnehmer.copy()
+    random.shuffle(zuf)
+    buchstaben = "ABCDEFGHIJKLMNOP"
+    gruppen = {buchstaben[i]: [] for i in range(n_gruppen)}
+    for idx, t in enumerate(zuf):
+        gruppen[buchstaben[idx % n_gruppen]].append(t)
+    return gruppen
+ 
+def t_erstelle_gruppenspiele(gruppen, boards):
+    gruppen_paarungen = {}
+    for gk in sorted(gruppen.keys()):
+        m = gruppen[gk]
+        paarungen = []
+        for i in range(len(m)):
+            for j in range(i + 1, len(m)):
+                paarungen.append((m[i], m[j]))
+        gruppen_paarungen[gk] = paarungen
+ 
+    spiele = []
+    board_counter = 0
+    max_p = max(len(p) for p in gruppen_paarungen.values()) if gruppen_paarungen else 0
+ 
+    for round_idx in range(max_p):
+        for gk in sorted(gruppen_paarungen.keys()):
+            if round_idx < len(gruppen_paarungen[gk]):
+                a, b = gruppen_paarungen[gk][round_idx]
+                spiele.append({
+                    "id": len(spiele),
+                    "phase": "gruppe",
+                    "gruppe": gk,
+                    "spieler_a": a,
+                    "spieler_b": b,
+                    "board": (board_counter % boards) + 1,
+                    "legs_a": None,
+                    "legs_b": None,
+                    "avg_a": None,
+                    "avg_b": None,
+                    "abgeschlossen": False
+                })
+                board_counter += 1
+    return spiele
+ 
+def t_berechne_tabelle(gruppe_key, mitglieder, gruppen_spiele):
+    tab = {t: {"Sp": 0, "S": 0, "N": 0, "+L": 0, "-L": 0, "Diff": 0,
+               "Avg": 0.0, "Pts": 0, "_avgs": []} for t in mitglieder}
+    for sp in gruppen_spiele:
+        if sp.get("phase") != "gruppe" or sp.get("gruppe") != gruppe_key:
+            continue
+        if not sp.get("abgeschlossen"):
+            continue
+        a, b = sp["spieler_a"], sp["spieler_b"]
+        la, lb = sp.get("legs_a") or 0, sp.get("legs_b") or 0
+        avga, avgb = sp.get("avg_a") or 0.0, sp.get("avg_b") or 0.0
+        if a not in tab or b not in tab:
+            continue
+        tab[a]["Sp"] += 1; tab[b]["Sp"] += 1
+        tab[a]["+L"] += la; tab[a]["-L"] += lb
+        tab[b]["+L"] += lb; tab[b]["-L"] += la
+        tab[a]["_avgs"].append(avga); tab[b]["_avgs"].append(avgb)
+        if la > lb:
+            tab[a]["Pts"] += 2; tab[a]["S"] += 1; tab[b]["N"] += 1
+        elif lb > la:
+            tab[b]["Pts"] += 2; tab[b]["S"] += 1; tab[a]["N"] += 1
+        else:
+            tab[a]["Pts"] += 1; tab[b]["Pts"] += 1
+    result = []
+    for t, s in tab.items():
+        s["Diff"] = s["+L"] - s["-L"]
+        s["Avg"] = round(sum(s["_avgs"]) / len(s["_avgs"]), 1) if s["_avgs"] else 0.0
+        result.append((t, s))
+    result.sort(key=lambda x: (-x[1]["Pts"], -x[1]["Diff"], -x[1]["Avg"]))
+    return result
+ 
+def t_erstelle_ko_spiele(n_qualifizierte):
+    bracket_size = 1
+    while bracket_size < n_qualifizierte:
+        bracket_size *= 2
+    total_r = int(math.log2(bracket_size))
+    namen = ["Finale", "Halbfinale", "Viertelfinale", "Achtelfinale",
+             "16tel-Finale", "32tel-Finale"]
+    ko = []
+    mid = 0
+    for r in range(total_r):
+        n_m = bracket_size // (2 ** (r + 1))
+        name_idx = total_r - 1 - r
+        rname = namen[name_idx] if name_idx < len(namen) else f"Runde {r + 1}"
+        for m in range(n_m):
+            ko.append({
+                "id": mid, "runde_idx": r, "runde_name": rname, "match_nr": m,
+                "spieler_a": None, "spieler_b": None, "board": None,
+                "legs_a": None, "legs_b": None, "avg_a": None, "avg_b": None,
+                "abgeschlossen": False, "sieger": None
+            })
+            mid += 1
+    return ko
+ 
+def t_get_qualifizierte(gruppen, gruppen_spiele, weiter_pro_gruppe):
+    positionen = {}
+    for gk in sorted(gruppen.keys()):
+        tab = t_berechne_tabelle(gk, gruppen[gk], gruppen_spiele)
+        positionen[gk] = [name for name, _ in tab]
+    qual = []
+    for pos in range(weiter_pro_gruppe):
+        for gk in sorted(gruppen.keys()):
+            if pos < len(positionen[gk]):
+                qual.append(positionen[gk][pos])
+    return qual
+ 
+def t_befuelle_ko_erste_runde(ko_spiele, qualifizierte, boards):
+    if not ko_spiele:
+        return ko_spiele
+    max_r = max(s["runde_idx"] for s in ko_spiele)
+    erste = sorted([s for s in ko_spiele if s["runde_idx"] == max_r],
+                   key=lambda x: x["match_nr"])
+    n = len(qualifizierte)
+    n_slots = len(erste) * 2
+    seeded = qualifizierte[:] + ["BYE"] * (n_slots - n)
+    bc = 0
+    for i, sp in enumerate(erste):
+        s1 = seeded[i]
+        s2 = seeded[n_slots - 1 - i]
+        sp["spieler_a"] = s1
+        sp["spieler_b"] = s2
+        if s2 == "BYE":
+            sp["abgeschlossen"] = True
+            sp["sieger"] = s1
+            sp["legs_a"] = 1
+            sp["legs_b"] = 0
+            sp["avg_a"] = 0.0
+            sp["avg_b"] = 0.0
+        else:
+            sp["board"] = (bc % boards) + 1
+            bc += 1
+    return ko_spiele
+ 
+def t_propagiere_sieger(ko_spiele, boards):
+    if not ko_spiele:
+        return ko_spiele
+    max_r = max(s["runde_idx"] for s in ko_spiele)
+    bc = sum(1 for s in ko_spiele if s.get("board") is not None)
+    for r in range(max_r, 0, -1):
+        runde = sorted([s for s in ko_spiele if s["runde_idx"] == r],
+                       key=lambda x: x["match_nr"])
+        naechste = sorted([s for s in ko_spiele if s["runde_idx"] == r - 1],
+                          key=lambda x: x["match_nr"])
+        for sp in runde:
+            if not sp.get("abgeschlossen") or not sp.get("sieger"):
+                continue
+            nm = sp["match_nr"] // 2
+            slot = sp["match_nr"] % 2
+            for ns in naechste:
+                if ns["match_nr"] == nm:
+                    if slot == 0:
+                        ns["spieler_a"] = sp["sieger"]
+                    else:
+                        ns["spieler_b"] = sp["sieger"]
+                    if (ns.get("spieler_a") and ns.get("spieler_b")
+                            and ns["board"] is None and not ns["abgeschlossen"]):
+                        ns["board"] = (bc % boards) + 1
+                        bc += 1
+    return ko_spiele
+ 
+def t_bracket_html(ko_spiele):
+    if not ko_spiele:
+        return ""
+    max_r = max(s["runde_idx"] for s in ko_spiele)
+    n_first = len([s for s in ko_spiele if s["runde_idx"] == max_r])
+    MATCH_H = 72
+    total_h = max(n_first * MATCH_H, 120)
+ 
+    css = """<style>
+.brk{display:flex;gap:0;overflow-x:auto;padding:16px;background:#0a1020;border-radius:12px;align-items:stretch;}
+.brk-col{display:flex;flex-direction:column;align-items:stretch;min-width:170px;}
+.brk-col+.brk-col{margin-left:0;}
+.brk-head{font-size:11px;color:#6b7fa3;text-transform:uppercase;letter-spacing:1px;
+    text-align:center;padding:4px 8px;background:#1a2540;border-radius:3px;margin-bottom:8px;white-space:nowrap;}
+.brk-matches{display:flex;flex-direction:column;justify-content:space-around;flex:1;}
+.brk-match{display:flex;flex-direction:column;gap:2px;position:relative;}
+.brk-board{font-size:10px;color:#4a5568;text-align:center;margin-bottom:1px;}
+.brk-p{padding:5px 10px;background:#1e2d45;border-radius:4px;font-size:12px;
+    color:#9bacc8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;}
+.brk-p.win{color:#22c55e;font-weight:700;}
+.brk-p.tbd{color:#374151;font-style:italic;}
+.brk-p.bye{color:#374151;text-decoration:line-through;}
+.brk-connector{width:18px;display:flex;flex-direction:column;justify-content:space-around;
+    align-self:stretch;position:relative;}
+</style>"""
+ 
+    def p_cls(name, is_win):
+        if not name:
+            return "tbd"
+        if name == "BYE":
+            return "bye"
+        if is_win:
+            return "win"
+        return ""
+ 
+    html = css + "<div class='brk'>"
+    for r in range(max_r, -1, -1):
+        runde_spiele = sorted([s for s in ko_spiele if s["runde_idx"] == r],
+                               key=lambda x: x["match_nr"])
+        rname = runde_spiele[0]["runde_name"] if runde_spiele else ""
+        html += f"<div class='brk-col'><div class='brk-head'>{rname}</div>"
+        html += f"<div class='brk-matches' style='height:{total_h}px;'>"
+        for sp in runde_spiele:
+            la = sp.get("legs_a")
+            lb = sp.get("legs_b")
+            done = sp.get("abgeschlossen", False)
+            win_a = done and la is not None and lb is not None and la > lb
+            win_b = done and la is not None and lb is not None and lb > la
+            pa = sp.get("spieler_a") or "TBD"
+            pb = sp.get("spieler_b") or "TBD"
+            la_str = f" <small>({la})</small>" if done and la is not None else ""
+            lb_str = f" <small>({lb})</small>" if done and lb is not None else ""
+            board_h = (f"<div class='brk-board'>Board {sp['board']}</div>"
+                       if sp.get("board") else "<div class='brk-board'>&nbsp;</div>")
+            html += (f"<div class='brk-match'>{board_h}"
+                     f"<div class='brk-p {p_cls(pa, win_a)}'>{pa}{la_str}</div>"
+                     f"<div class='brk-p {p_cls(pb, win_b)}'>{pb}{lb_str}</div></div>")
+        html += "</div></div>"
+        if r > 0:
+            html += "<div class='brk-connector'></div>"
+    html += "</div>"
+    return html
+ 
+# --- UI-Abschnitte ---
+ 
+def _t_setup_ui():
+    st.markdown("""
+    <div style='text-align:center;padding:30px 0 10px 0;'>
+        <div style='font-size:48px;'>🏆</div>
+        <div style='font-size:22px;font-weight:700;color:#fff;margin-top:8px;'>Neues Turnier erstellen</div>
+        <div style='font-size:13px;color:#6b7fa3;margin-top:4px;'>Kein aktives Turnier vorhanden</div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    with st.form("neues_turnier_form"):
+        name = st.text_input("Turniername", placeholder="z.B. Vereinsmeisterschaft 2026")
+ 
+        st.markdown("#### Modus")
+        st.selectbox("Turniermodus", ["Gruppen + KO"], disabled=True)
+ 
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### Gruppenphase")
+            n_teilnehmer = st.number_input("Anzahl Teilnehmer", 4, 32, 8, 1)
+            n_gruppen = st.number_input("Anzahl Gruppen", 1, 8, 2, 1)
+            weiter = st.number_input("Weiterkommer pro Gruppe", 1, 4, 2, 1)
+            legs_g = st.selectbox("Legs pro Spiel (Gruppe)", [3, 5, 7], index=0)
+        with col2:
+            st.markdown("#### KO-Phase")
+            legs_k = st.selectbox("Legs pro Spiel (KO)", [5, 7, 9], index=0)
+ 
+            n_qual = int(n_gruppen) * int(weiter)
+            bracket_size = 1
+            while bracket_size < n_qual:
+                bracket_size *= 2
+            st.markdown("&nbsp;")
+            st.markdown("**Bracket-Vorschau:**")
+            if n_qual == bracket_size:
+                st.success(f"✅ {n_qual} Qualifizierte → sauberes {bracket_size}er-Bracket")
+            else:
+                byes = bracket_size - n_qual
+                st.warning(f"⚠️ {n_qual} Qualifizierte → {bracket_size}er-Bracket ({byes} Freilos{'e' if byes>1 else ''})")
+            n_runden = int(math.log2(bracket_size))
+            runden_namen = ["Finale", "Halbfinale", "Viertelfinale", "Achtelfinale",
+                            "16tel-Finale", "32tel-Finale"]
+            for ri in range(n_runden - 1, -1, -1):
+                name_idx = n_runden - 1 - ri
+                rn = runden_namen[name_idx] if name_idx < len(runden_namen) else f"Runde {ri+1}"
+                n_m = bracket_size // (2 ** (ri + 1))
+                st.caption(f"→ {rn}: {n_m} Spiel{'e' if n_m>1 else ''}")
+ 
+        submitted = st.form_submit_button("🏆 Turnier erstellen", type="primary")
+        if submitted:
+            if not name.strip():
+                st.error("Bitte einen Turniernamen eingeben.")
+            else:
+                config = {
+                    "modus": "gruppen_ko",
+                    "n_teilnehmer": int(n_teilnehmer),
+                    "n_gruppen": int(n_gruppen),
+                    "weiter_pro_gruppe": int(weiter),
+                    "legs_gruppen": int(legs_g),
+                    "legs_ko": int(legs_k),
+                    "teilnehmer": []
+                }
+                speichere_turnier({
+                    "name": name.strip(),
+                    "status": "auslosung",
+                    "config": config,
+                    "gruppen": {},
+                    "gruppen_spiele": [],
+                    "ko_spiele": [],
+                    "qualifizierte": {}
+                })
+                st.rerun()
+ 
+ 
+def _t_auslosung_ui(turnier):
+    config = turnier.get("config", {})
+    n_tln = config.get("n_teilnehmer", 8)
+    n_grp = config.get("n_gruppen", 2)
+    weiter = config.get("weiter_pro_gruppe", 2)
+    legs_g = config.get("legs_gruppen", 3)
+    legs_k = config.get("legs_ko", 5)
+ 
+    st.markdown(f"""
+    <div style='background:#1a2540;border-radius:8px;padding:14px 18px;margin-bottom:20px;display:flex;flex-wrap:wrap;gap:20px;'>
+        <div><div style='font-size:11px;color:#6b7fa3;'>Teilnehmer</div><div style='font-size:20px;font-weight:700;color:#fff;'>{n_tln}</div></div>
+        <div><div style='font-size:11px;color:#6b7fa3;'>Gruppen</div><div style='font-size:20px;font-weight:700;color:#fff;'>{n_grp}</div></div>
+        <div><div style='font-size:11px;color:#6b7fa3;'>Weiterkommer/Gruppe</div><div style='font-size:20px;font-weight:700;color:#fff;'>{weiter}</div></div>
+        <div><div style='font-size:11px;color:#6b7fa3;'>Legs Gruppe</div><div style='font-size:20px;font-weight:700;color:#fff;'>Best of {legs_g}</div></div>
+        <div><div style='font-size:11px;color:#6b7fa3;'>Legs KO</div><div style='font-size:20px;font-weight:700;color:#fff;'>Best of {legs_k}</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    st.markdown("### Teilnehmer")
+    df_spieler_liste = list(lade_spieler().index)
+    eingabe_modus = st.radio("Eingabe", ["Aus Spielerliste", "Manuell"], horizontal=True, label_visibility="collapsed")
+ 
+    teilnehmer = []
+    if eingabe_modus == "Aus Spielerliste":
+        ausgewaehlt = st.multiselect(
+            f"Spieler auswählen ({n_tln} benötigt)",
+            df_spieler_liste
+        )
+        teilnehmer = ausgewaehlt
+    else:
+        text = st.text_area(
+            f"Namen eingeben (einer pro Zeile, {n_tln} benötigt)",
+            height=200, placeholder="Max Mustermann\nAnna Beispiel\n..."
+        )
+        teilnehmer = [t.strip() for t in text.strip().split("\n") if t.strip()]
+ 
+    n_aktuell = len(teilnehmer)
+    if n_aktuell > 0:
+        if n_aktuell == n_tln:
+            st.success(f"✅ {n_aktuell}/{n_tln} Teilnehmer – bereit zur Auslosung!")
+        else:
+            st.warning(f"⚠️ {n_aktuell}/{n_tln} Teilnehmer")
+ 
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        if st.button("🎲 Gruppen auslosen!", disabled=(n_aktuell != n_tln), type="primary", use_container_width=True):
+            gruppen = t_erstelle_gruppen(teilnehmer, n_grp)
+            gruppen_spiele = t_erstelle_gruppenspiele(gruppen, TURNIER_BOARDS)
+            neue_config = dict(config)
+            neue_config["teilnehmer"] = teilnehmer
+            speichere_turnier({
+                **turnier,
+                "status": "gruppen",
+                "config": neue_config,
+                "gruppen": gruppen,
+                "gruppen_spiele": gruppen_spiele
+            })
+            st.rerun()
+    with col2:
+        if st.button("⚙️ Einstellungen ändern", use_container_width=True):
+            loesche_turnier()
+            st.rerun()
+ 
+ 
+def _t_uebersicht_ui(turnier):
+    config = turnier.get("config", {})
+    gruppen = turnier.get("gruppen", {})
+    gs = turnier.get("gruppen_spiele", [])
+    ko = turnier.get("ko_spiele", [])
+    status = turnier.get("status", "gruppen")
+    weiter_n = config.get("weiter_pro_gruppe", 2)
+ 
+    total_g = len(gs)
+    done_g = sum(1 for s in gs if s.get("abgeschlossen"))
+    real_ko = [s for s in ko if s.get("spieler_b") != "BYE"]
+    done_k = sum(1 for s in real_ko if s.get("abgeschlossen"))
+ 
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Gruppenspiele", f"{done_g}/{total_g}")
+    col2.metric("KO-Spiele", f"{done_k}/{len(real_ko)}" if ko else "–")
+    col3.metric("Qualifizierte", f"{weiter_n * len(gruppen)}")
+    col4.metric("Boards", str(TURNIER_BOARDS))
+ 
+    st.markdown("---")
+ 
+    if status == "abgeschlossen" and ko:
+        finale = [s for s in ko if s["runde_idx"] == 0]
+        if finale and finale[0].get("sieger"):
+            st.markdown(f"""
+            <div style='background:linear-gradient(135deg,#1a1a0e,#2a2000);padding:28px;border-radius:14px;
+                text-align:center;margin-bottom:24px;border:2px solid #f59e0b88;'>
+                <div style='font-size:52px;'>🏆</div>
+                <div style='font-size:34px;font-weight:900;color:#f59e0b;margin-top:8px;'>{finale[0]['sieger']}</div>
+                <div style='font-size:13px;color:#92814a;letter-spacing:3px;text-transform:uppercase;margin-top:4px;'>Turniersieger</div>
+            </div>
+            """, unsafe_allow_html=True)
+ 
+    if gruppen:
+        st.markdown("### Gruppentabellen")
+        cols = st.columns(min(len(gruppen), 4))
+        for i, (gk, mitglieder) in enumerate(sorted(gruppen.items())):
+            tab = t_berechne_tabelle(gk, mitglieder, gs)
+            with cols[i % len(cols)]:
+                st.markdown(f"**Gruppe {gk}**")
+                rows = ""
+                for pos, (name, s) in enumerate(tab):
+                    bg = "background:#0f2a1a;" if pos < weiter_n else ""
+                    badge = "🟢" if pos < weiter_n else "·"
+                    rows += (
+                        f"<tr style='{bg}'>"
+                        f"<td style='padding:4px 6px;font-size:12px;'>{badge}</td>"
+                        f"<td style='padding:4px 6px;font-size:13px;font-weight:600;'>{name}</td>"
+                        f"<td style='padding:4px 6px;font-size:13px;text-align:center;font-weight:700;'>{s['Pts']}</td>"
+                        f"<td style='padding:4px 6px;font-size:12px;text-align:center;color:#888;'>{s['Diff']:+d}</td>"
+                        f"<td style='padding:4px 6px;font-size:12px;text-align:center;color:#6b7fa3;'>{s['Avg']}</td>"
+                        f"</tr>"
+                    )
+                st.markdown(
+                    f"<table style='width:100%;border-collapse:collapse;'>"
+                    f"<thead><tr><th></th><th style='font-size:10px;color:#6b7fa3;text-align:left;padding:2px 6px;'>Spieler</th>"
+                    f"<th style='font-size:10px;color:#6b7fa3;'>Pts</th><th style='font-size:10px;color:#6b7fa3;'>+/-</th>"
+                    f"<th style='font-size:10px;color:#6b7fa3;'>Avg</th></tr></thead>"
+                    f"<tbody>{rows}</tbody></table>",
+                    unsafe_allow_html=True
+                )
+ 
+    if status in ("ko", "abgeschlossen") and turnier.get("qualifizierte"):
+        st.markdown("---")
+        st.markdown("### Qualifizierte für KO-Phase")
+        qual = turnier.get("qualifizierte", {})
+        qual_cols = st.columns(min(len(qual), 4))
+        for i, (seed, name) in enumerate(sorted(qual.items(), key=lambda x: int(x[0]))):
+            with qual_cols[i % len(qual_cols)]:
+                st.markdown(
+                    f"<div style='background:#1a2540;border-radius:6px;padding:6px 12px;margin-bottom:4px;'>"
+                    f"<span style='color:#6b7fa3;font-size:11px;'>Seed {seed}</span> "
+                    f"<span style='font-weight:700;font-size:14px;'>{name}</span></div>",
+                    unsafe_allow_html=True
+                )
+ 
+ 
+def _t_gruppenphase_ui(turnier, readonly=False):
+    config = turnier.get("config", {})
+    gruppen = turnier.get("gruppen", {})
+    gs = turnier.get("gruppen_spiele", [])
+    weiter_n = config.get("weiter_pro_gruppe", 2)
+ 
+    if not gruppen:
+        st.info("Noch keine Gruppen ausgelost.")
+        return
+ 
+    if not readonly:
+        pw_key = "t_gp_pw"
+        pw = st.text_input("Passwort zum Eintragen", type="password", key=pw_key)
+        admin_mode = (pw == PASSWORT)
+        if admin_mode:
+            st.caption("🔒 Ergebnis sperren · 🔓 Entsperren")
+    else:
+        admin_mode = False
+ 
+    sub = st.tabs(["📅 Spielplan (nach Boards)", "📊 Gruppentabellen"])
+ 
+    with sub[0]:
+        board_tab_labels = [f"Board {b}" for b in range(1, TURNIER_BOARDS + 1)] + ["Alle Spiele"]
+        board_tabs = st.tabs(board_tab_labels)
+ 
+        for board_idx in range(TURNIER_BOARDS + 1):
+            with board_tabs[board_idx]:
+                if board_idx < TURNIER_BOARDS:
+                    board_nr = board_idx + 1
+                    sicht_spiele = [s for s in gs if s.get("board") == board_nr]
+                else:
+                    sicht_spiele = gs
+ 
+                if not sicht_spiele:
+                    st.info("Keine Spiele auf diesem Board.")
+                    continue
+ 
+                aktion = None
+                live_ergebnisse = {}
+ 
+                for sp in sicht_spiele:
+                    sid = sp["id"]
+                    a, b = sp["spieler_a"], sp["spieler_b"]
+                    gk = sp.get("gruppe", "?")
+                    ist_fertig = sp.get("abgeschlossen", False)
+                    board_label = f"<span style='background:#2a3555;border-radius:3px;padding:1px 6px;font-size:11px;color:#6b7fa3;'>Gr.{gk}</span>"
+ 
+                    if ist_fertig:
+                        la = sp.get("legs_a", 0); lb = sp.get("legs_b", 0)
+                        avga = sp.get("avg_a", 0.0); avgb = sp.get("avg_b", 0.0)
+                        cols = st.columns([1, 9, 1] if admin_mode else [1, 10])
+                        with cols[0]:
+                            st.markdown(board_label, unsafe_allow_html=True)
+                        with cols[1]:
+                            gew_style = lambda p: "color:#22c55e;font-weight:700;" if (p == a and la > lb) or (p == b and lb > la) else ""
+                            st.markdown(
+                                f"<div style='background:#1a2a1a;border-radius:6px;padding:7px 12px;'>"
+                                f"✅ <span style='{gew_style(a)}'>{a}</span>"
+                                f" <span style='color:#f59e0b;font-weight:700;font-size:15px;'>{int(la)}:{int(lb)}</span> "
+                                f"<span style='{gew_style(b)}'>{b}</span>"
+                                f"<span style='color:#6b7fa3;font-size:12px;'> · Avg {avga:.1f} / {avgb:.1f}</span></div>",
+                                unsafe_allow_html=True
+                            )
+                        if admin_mode and not readonly and len(cols) > 2:
+                            with cols[2]:
+                                if st.button("🔓", key=f"t_unlock_g_{sid}_{board_idx}"):
+                                    aktion = ("unlock", sid)
+                        live_ergebnisse[sid] = sp
+                    else:
+                        if admin_mode and not readonly:
+                            c = st.columns([1, 2, 2, 1, 1, 1, 1, 1])
+                            with c[0]:
+                                st.markdown(board_label, unsafe_allow_html=True)
+                            with c[1]:
+                                st.markdown(f"**{a}**")
+                            with c[2]:
+                                st.markdown(f"**{b}**")
+                            with c[3]:
+                                la = st.number_input("", 0, step=1, value=sp.get("legs_a") or 0,
+                                                     key=f"t_gla_{sid}_{board_idx}", label_visibility="collapsed")
+                            with c[4]:
+                                lb = st.number_input("", 0, step=1, value=sp.get("legs_b") or 0,
+                                                     key=f"t_glb_{sid}_{board_idx}", label_visibility="collapsed")
+                            with c[5]:
+                                avga = st.number_input("", 0.0, step=0.1, value=sp.get("avg_a") or 0.0,
+                                                       key=f"t_gavga_{sid}_{board_idx}", label_visibility="collapsed")
+                            with c[6]:
+                                avgb = st.number_input("", 0.0, step=0.1, value=sp.get("avg_b") or 0.0,
+                                                       key=f"t_gavgb_{sid}_{board_idx}", label_visibility="collapsed")
+                            with c[7]:
+                                if st.button("🔒", key=f"t_lock_g_{sid}_{board_idx}"):
+                                    aktion = ("lock", sid, la, lb, avga, avgb)
+                            live_ergebnisse[sid] = {**sp, "legs_a": la, "legs_b": lb, "avg_a": avga, "avg_b": avgb}
+                        else:
+                            c = st.columns([1, 9])
+                            with c[0]:
+                                st.markdown(board_label, unsafe_allow_html=True)
+                            with c[1]:
+                                st.markdown(f"⏳ **{a}** vs **{b}**")
+                            live_ergebnisse[sid] = sp
+ 
+                if aktion and admin_mode and not readonly:
+                    neue_gs = []
+                    for sp in gs:
+                        sp = dict(sp)
+                        if sp["id"] == aktion[1]:
+                            if aktion[0] == "lock" and len(aktion) > 2:
+                                sp["legs_a"] = aktion[2]; sp["legs_b"] = aktion[3]
+                                sp["avg_a"] = aktion[4]; sp["avg_b"] = aktion[5]
+                                sp["abgeschlossen"] = True
+                            elif aktion[0] == "unlock":
+                                sp["abgeschlossen"] = False
+                        neue_gs.append(sp)
+                    speichere_turnier({**turnier, "gruppen_spiele": neue_gs})
+                    st.rerun()
+ 
+        if admin_mode and not readonly:
+            st.markdown("---")
+            fehlend = [s for s in gs if not s.get("abgeschlossen")]
+            if not fehlend:
+                st.success("✅ Alle Gruppenspiele eingetragen!")
+                if st.button("🏆 Gruppenphase abschließen & KO-Phase starten", type="primary"):
+                    qual_list = t_get_qualifizierte(gruppen, gs, config.get("weiter_pro_gruppe", 2))
+                    ko_spiele = t_erstelle_ko_spiele(len(qual_list))
+                    ko_spiele = t_befuelle_ko_erste_runde(ko_spiele, qual_list, TURNIER_BOARDS)
+                    ko_spiele = t_propagiere_sieger(ko_spiele, TURNIER_BOARDS)
+                    qual_dict = {str(i + 1): n for i, n in enumerate(qual_list)}
+                    speichere_turnier({
+                        **turnier,
+                        "status": "ko",
+                        "ko_spiele": ko_spiele,
+                        "qualifizierte": qual_dict
+                    })
+                    st.rerun()
+            else:
+                st.warning(f"Noch {len(fehlend)} Spiel(e) ausstehend. Alle Ergebnisse eintragen, um zur KO-Phase zu wechseln.")
+ 
+    with sub[1]:
+        for gk in sorted(gruppen.keys()):
+            mitglieder = gruppen[gk]
+            tab = t_berechne_tabelle(gk, mitglieder, gs)
+            st.markdown(f"### Gruppe {gk}")
+            rows = ""
+            for pos, (name, s) in enumerate(tab):
+                bg = "background:#0a1f12;" if pos < weiter_n else ""
+                badge = "🟢" if pos < weiter_n else "🔴"
+                diff_col = "#22c55e" if s["Diff"] > 0 else "#ef4444" if s["Diff"] < 0 else "#9bacc8"
+                rows += (
+                    f"<tr style='{bg}border-bottom:1px solid #1e2d45;'>"
+                    f"<td style='padding:9px 10px;font-size:14px;'>{badge} {pos+1}.</td>"
+                    f"<td style='padding:9px 10px;font-size:15px;font-weight:700;'>{name}</td>"
+                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;color:#6b7fa3;'>{s['Sp']}</td>"
+                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;color:#22c55e;'>{s['S']}</td>"
+                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;color:#ef4444;'>{s['N']}</td>"
+                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;'>{s['+L']}:{s['-L']}</td>"
+                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;color:{diff_col};'>{s['Diff']:+d}</td>"
+                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;color:#f59e0b;'>{s['Avg']}</td>"
+                    f"<td style='padding:9px 10px;text-align:center;font-size:16px;font-weight:900;color:#fff;'>{s['Pts']}</td>"
+                    f"</tr>"
+                )
+            header = (
+                "<tr style='border-bottom:2px solid #2a3555;'>"
+                "<th style='padding:6px 10px;font-size:10px;color:#6b7fa3;text-align:left;'>#</th>"
+                "<th style='padding:6px 10px;font-size:10px;color:#6b7fa3;text-align:left;'>Spieler</th>"
+                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>Sp</th>"
+                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>S</th>"
+                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>N</th>"
+                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>Legs</th>"
+                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>Diff</th>"
+                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>Avg</th>"
+                "<th style='padding:6px 10px;font-size:10px;color:#6b7fa3;'>Pts</th>"
+                "</tr>"
+            )
+            st.markdown(
+                f"<table style='width:100%;border-collapse:collapse;background:#111827;border-radius:8px;"
+                f"overflow:hidden;margin-bottom:24px;'>"
+                f"<thead>{header}</thead><tbody>{rows}</tbody></table>",
+                unsafe_allow_html=True
+            )
+            gruppe_spiele = [s for s in gs if s.get("gruppe") == gk]
+            with st.expander(f"Spiele Gruppe {gk} ({sum(1 for s in gruppe_spiele if s.get('abgeschlossen'))}/{len(gruppe_spiele)})"):
+                for sp in gruppe_spiele:
+                    if sp.get("abgeschlossen"):
+                        la, lb = sp.get("legs_a", 0), sp.get("legs_b", 0)
+                        avga, avgb = sp.get("avg_a", 0.0), sp.get("avg_b", 0.0)
+                        st.markdown(
+                            f"✅ **{sp['spieler_a']}** {int(la)}:{int(lb)} **{sp['spieler_b']}** "
+                            f"<span style='color:#6b7fa3;font-size:12px;'>Avg {avga:.1f}/{avgb:.1f} · Board {sp.get('board', '?')}</span>",
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(f"⏳ **{sp['spieler_a']}** vs **{sp['spieler_b']}** · Board {sp.get('board', '?')}")
+ 
+ 
+def _t_ko_ui(turnier):
+    ko = turnier.get("ko_spiele", [])
+    status = turnier.get("status", "ko")
+ 
+    if not ko:
+        st.info("Keine KO-Spiele vorhanden.")
+        return
+ 
+    pw = st.text_input("Passwort zum Eintragen", type="password", key="t_ko_pw")
+    admin_mode = (pw == PASSWORT)
+    if admin_mode:
+        st.caption("🔒 Ergebnis sperren · 🔓 Entsperren")
+ 
+    max_r = max(s["runde_idx"] for s in ko)
+ 
+    for r in range(max_r, -1, -1):
+        runde_spiele = sorted([s for s in ko if s["runde_idx"] == r], key=lambda x: x["match_nr"])
+        rname = runde_spiele[0]["runde_name"] if runde_spiele else f"Runde {r}"
+ 
+        st.markdown(f"### {rname}")
+        aktion = None
+ 
+        for sp in runde_spiele:
+            sid = sp["id"]
+            a = sp.get("spieler_a") or "TBD"
+            b = sp.get("spieler_b") or "TBD"
+ 
+            if b == "BYE":
+                st.markdown(
+                    f"<div style='background:#0f1f0f;border-radius:6px;padding:8px 12px;margin-bottom:4px;'>"
+                    f"🎯 <b>{a}</b> — <span style='color:#22c55e;'>Freilos (BYE)</span></div>",
+                    unsafe_allow_html=True
+                )
+                continue
+ 
+            ist_fertig = sp.get("abgeschlossen", False)
+            board_str = f"Board {sp['board']}" if sp.get("board") else "Board TBD"
+ 
+            if ist_fertig:
+                la, lb = sp.get("legs_a", 0), sp.get("legs_b", 0)
+                avga, avgb = sp.get("avg_a", 0.0), sp.get("avg_b", 0.0)
+                sieger = sp.get("sieger", "?")
+                cols = st.columns([8, 1] if admin_mode else [10])
+                with cols[0]:
+                    gew_a = la is not None and lb is not None and la > lb
+                    st.markdown(
+                        f"<div style='background:#1a2a1a;border-radius:6px;padding:9px 14px;margin-bottom:4px;'>"
+                        f"<span style='font-size:11px;color:#6b7fa3;'>{board_str}</span><br>"
+                        f"✅ <span style='{'color:#22c55e;font-weight:700;' if gew_a else ''}'>{a}</span>"
+                        f" <span style='color:#f59e0b;font-weight:700;font-size:16px;'>{int(la)}:{int(lb)}</span> "
+                        f"<span style='{'color:#22c55e;font-weight:700;' if not gew_a else ''}'>{b}</span>"
+                        f"<span style='color:#6b7fa3;font-size:12px;'> · Avg {avga:.1f}/{avgb:.1f}</span>"
+                        f"<span style='color:#22c55e;font-size:12px;font-weight:600;'> → {sieger}</span></div>",
+                        unsafe_allow_html=True
+                    )
+                if admin_mode and len(cols) > 1:
+                    with cols[1]:
+                        if st.button("🔓", key=f"t_unlock_ko_{sid}"):
+                            aktion = ("unlock", sid)
+            elif a == "TBD" or b == "TBD":
+                st.markdown(
+                    f"<div style='background:#111827;border-radius:6px;padding:8px 12px;margin-bottom:4px;color:#4b5563;'>"
+                    f"⏸ TBD vs TBD – wartet auf Vorrundenergebnis</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                if admin_mode:
+                    c = st.columns([2, 2, 1, 1, 1, 1, 1])
+                    with c[0]:
+                        st.markdown(f"**{a}**")
+                    with c[1]:
+                        st.markdown(f"**{b}**")
+                    with c[2]:
+                        la = st.number_input("", 0, step=1, value=0,
+                                             key=f"t_kola_{sid}", label_visibility="collapsed")
+                    with c[3]:
+                        lb = st.number_input("", 0, step=1, value=0,
+                                             key=f"t_kolb_{sid}", label_visibility="collapsed")
+                    with c[4]:
+                        avga = st.number_input("", 0.0, step=0.1, value=0.0,
+                                               key=f"t_koavga_{sid}", label_visibility="collapsed")
+                    with c[5]:
+                        avgb = st.number_input("", 0.0, step=0.1, value=0.0,
+                                               key=f"t_koavgb_{sid}", label_visibility="collapsed")
+                    with c[6]:
+                        if st.button("🔒", key=f"t_lock_ko_{sid}"):
+                            aktion = ("lock", sid, la, lb, avga, avgb)
+                else:
+                    st.markdown(
+                        f"<div style='background:#111827;border-radius:6px;padding:8px 12px;margin-bottom:4px;'>"
+                        f"⏳ <b>{a}</b> vs <b>{b}</b>"
+                        f"<span style='color:#6b7fa3;font-size:12px;'> · {board_str}</span></div>",
+                        unsafe_allow_html=True
+                    )
+ 
+        if aktion and admin_mode:
+            neue_ko = []
+            for sp in ko:
+                sp = dict(sp)
+                if sp["id"] == aktion[1]:
+                    if aktion[0] == "lock" and len(aktion) > 2:
+                        _, sid_a, la_v, lb_v, avga_v, avgb_v = aktion
+                        sp["legs_a"] = la_v; sp["legs_b"] = lb_v
+                        sp["avg_a"] = avga_v; sp["avg_b"] = avgb_v
+                        sp["abgeschlossen"] = True
+                        sp["sieger"] = sp["spieler_a"] if la_v > lb_v else sp["spieler_b"]
+                    elif aktion[0] == "unlock":
+                        sp["abgeschlossen"] = False
+                        sp["sieger"] = None
+                neue_ko.append(sp)
+            neue_ko = t_propagiere_sieger(neue_ko, TURNIER_BOARDS)
+            neue_status = turnier.get("status", "ko")
+            finale = [s for s in neue_ko if s["runde_idx"] == 0]
+            if finale and finale[0].get("abgeschlossen"):
+                neue_status = "abgeschlossen"
+            speichere_turnier({**turnier, "ko_spiele": neue_ko, "status": neue_status})
+            st.rerun()
+ 
+        st.markdown("---")
+ 
+ 
+def _t_baum_ui(turnier):
+    ko = turnier.get("ko_spiele", [])
+    if not ko:
+        st.info("Der Turnierbaum wird nach Abschluss der Gruppenphase verfügbar.")
+        return
+    st.markdown("### Turnierbaum")
+    st.markdown(t_bracket_html(ko), unsafe_allow_html=True)
+    if turnier.get("status") == "abgeschlossen":
+        finale = [s for s in ko if s["runde_idx"] == 0]
+        if finale and finale[0].get("sieger"):
+            st.markdown(f"""
+            <div style='text-align:center;margin-top:24px;padding:24px;
+                background:linear-gradient(135deg,#1a1a0e,#2a2000);border-radius:14px;
+                border:2px solid #f59e0b88;'>
+                <div style='font-size:48px;'>🏆</div>
+                <div style='font-size:30px;font-weight:900;color:#f59e0b;margin-top:8px;'>{finale[0]['sieger']}</div>
+                <div style='font-size:12px;color:#92814a;letter-spacing:3px;text-transform:uppercase;margin-top:6px;'>Turniersieger</div>
+            </div>
+            """, unsafe_allow_html=True)
+ 
+ 
+def turnier_main():
+    turnier = lade_turnier()
+    st.markdown("<h2 style='font-size:28px;'>🏆 Turnier</h2>", unsafe_allow_html=True)
+ 
+    if turnier is None:
+        _t_setup_ui()
+        return
+ 
+    status = turnier.get("status", "setup")
+    name = turnier.get("name", "Turnier")
+ 
+    status_map = {
+        "auslosung": ("🎲 Auslosung", "#f59e0b"),
+        "gruppen": ("⚽ Gruppenphase", "#3b82f6"),
+        "ko": ("🏆 KO-Phase", "#22c55e"),
+        "abgeschlossen": ("✅ Abgeschlossen", "#22c55e")
+    }
+    slabel, scolor = status_map.get(status, ("⚙️ Setup", "#6b7fa3"))
+ 
+    st.markdown(f"""
+    <div style='background:#1a2540;padding:14px 20px;border-radius:10px;margin-bottom:20px;
+        display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;'>
+        <div>
+            <div style='font-size:24px;font-weight:800;color:#fff;'>{name}</div>
+            <div style='font-size:12px;color:#6b7fa3;margin-top:2px;'>Modus: Gruppen + KO · {TURNIER_BOARDS} Boards</div>
+        </div>
+        <div style='background:{scolor}22;color:{scolor};padding:5px 14px;border-radius:20px;
+            font-size:13px;font-weight:700;border:1px solid {scolor}55;'>
+            {slabel}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    if status == "auslosung":
+        tabs = st.tabs(["🎲 Auslosung"])
+        with tabs[0]:
+            _t_auslosung_ui(turnier)
+    elif status == "gruppen":
+        tabs = st.tabs(["📋 Übersicht", "⚽ Gruppenphase", "🌳 Turnierbaum"])
+        with tabs[0]:
+            _t_uebersicht_ui(turnier)
+        with tabs[1]:
+            _t_gruppenphase_ui(turnier)
+        with tabs[2]:
+            _t_baum_ui(turnier)
+    elif status in ("ko", "abgeschlossen"):
+        tabs = st.tabs(["📋 Übersicht", "⚽ Gruppenphase", "🏆 KO-Phase", "🌳 Turnierbaum"])
+        with tabs[0]:
+            _t_uebersicht_ui(turnier)
+        with tabs[1]:
+            _t_gruppenphase_ui(turnier, readonly=True)
+        with tabs[2]:
+            _t_ko_ui(turnier)
+        with tabs[3]:
+            _t_baum_ui(turnier)
+ 
+    st.markdown("---")
+    with st.expander("⚠️ Turnier verwalten"):
+        st.caption("Achtung: Das Löschen kann nicht rückgängig gemacht werden.")
+        if st.button("🗑 Turnier löschen", type="secondary"):
+            loesche_turnier()
+            st.rerun()
+ 
 # ---------------------
 # STREAMLIT START
 # ---------------------
@@ -563,7 +1449,7 @@ st.set_page_config(
 )
  
 # ---------------------
-# BACKSPACE-SCHUTZ (verhindert Browser-Rücknavigation)
+# BACKSPACE-SCHUTZ
 # ---------------------
 st.markdown("""
 <script>
@@ -1093,11 +1979,9 @@ elif "Auslosung 🎲" in menu:
  
     df_spieler_liste = list(lade_spieler().index)
  
-    # Aktiven Spielplan aus Supabase laden (geräteübergreifend)
     db_plan = lade_spielplan_db()
  
     if db_plan is None:
-        # ── Kein aktiver Spielplan ──
         if st.session_state.zeige_zusammenfassung and st.session_state.zusammenfassung_spieltag:
             st.success(f"✅ Spieltag {st.session_state.zusammenfassung_spieltag} wurde in die Rangliste übernommen!")
             st.markdown("---")
@@ -1136,13 +2020,12 @@ elif "Auslosung 🎲" in menu:
                         st.rerun()
  
     else:
-        # ── Aktiver Spielplan vorhanden ──
         spielplan  = db_plan["spielplan"]
         reihenfolge = db_plan["reihenfolge"]
         extra_spieler = db_plan["extra_spieler"]
         spieltag_nr   = db_plan["spieltag"]
-        ergebnisse    = db_plan["ergebnisse"]   # {int_idx: {legs_a, legs_b, avg_a, avg_b}}
-        locked        = set(db_plan["locked"])   # set of int indices
+        ergebnisse    = db_plan["ergebnisse"]
+        locked        = set(db_plan["locked"])
  
         st.markdown(f"### Spieltag {spieltag_nr}")
  
@@ -1152,10 +2035,8 @@ elif "Auslosung 🎲" in menu:
         pw = st.text_input("Passwort zum Eintragen", type="password", key="pw_spielplan")
  
         if pw == PASSWORT:
-            # ── Admin-Ansicht: Eingabe + Sperren ──
             st.caption("🔒 sperrt ein eingetipptes Ergebnis (grau). 🔓 entsperrt es wieder. 🗑 entfernt das Spiel.")
  
-            # Spaltenheader
             st.markdown("""
             <div style='display:grid;grid-template-columns:3fr 3fr 2fr 2fr 2fr 2fr 1fr 1fr;gap:6px;margin-bottom:2px;'>
                 <div></div><div></div>
@@ -1166,7 +2047,7 @@ elif "Auslosung 🎲" in menu:
             """, unsafe_allow_html=True)
  
             ergebnisse_temp = {}
-            aktion = None  # ("lock"|"unlock"|"delete", orig_idx)
+            aktion = None
  
             for orig_idx in reihenfolge:
                 spiel  = spielplan[orig_idx]
@@ -1175,7 +2056,6 @@ elif "Auslosung 🎲" in menu:
                 ist_gesperrt = orig_idx in locked
  
                 if ist_gesperrt:
-                    # Gesperrte Zeile: kompakt + grau, kein Input
                     la   = vorher.get("legs_a", 0)
                     lb   = vorher.get("legs_b", 0)
                     avga = vorher.get("avg_a", 50.0)
@@ -1197,7 +2077,6 @@ elif "Auslosung 🎲" in menu:
                     ergebnisse_temp[orig_idx] = {"legs_a": la, "legs_b": lb, "avg_a": avga, "avg_b": avgb}
  
                 else:
-                    # Normale Eingabe-Zeile
                     cols = st.columns([3, 3, 2, 2, 2, 2, 1, 1])
                     with cols[0]:
                         st.markdown(f"**{a}**")
@@ -1227,7 +2106,6 @@ elif "Auslosung 🎲" in menu:
                             aktion = ("delete", orig_idx)
                     ergebnisse_temp[orig_idx] = {"legs_a": la, "legs_b": lb, "avg_a": avga, "avg_b": avgb}
  
-            # ── Aktionen verarbeiten (Lock / Unlock / Delete) ──
             if aktion is not None:
                 art, idx_a = aktion
                 if art == "lock":
@@ -1248,7 +2126,6 @@ elif "Auslosung 🎲" in menu:
  
             st.markdown("---")
  
-            # Zwischenspeichern-Button (speichert aktuelle Eingaben ohne Abzuschließen)
             if st.button("💾 Ergebnisse zwischenspeichern"):
                 speichere_spielplan_db(spielplan, spieltag_nr, extra_spieler,
                                        ergebnisse_temp, list(locked), reihenfolge)
@@ -1259,7 +2136,6 @@ elif "Auslosung 🎲" in menu:
  
             with col_submit:
                 if st.button("✅ In Rangliste übernehmen"):
-                    # ── Schutz vor Doppel-Eintrag ──
                     df_log_check = lade_log()
                     if not df_log_check.empty and str(spieltag_nr) in df_log_check["Datum"].astype(str).values:
                         st.error(
@@ -1298,7 +2174,6 @@ elif "Auslosung 🎲" in menu:
                     st.rerun()
  
         else:
-            # ── Nur-Lese-Ansicht (kein Passwort) ──
             st.info(f"📋 Aktiver Spielplan für **Spieltag {spieltag_nr}** — Passwort eingeben zum Bearbeiten.")
             st.markdown("---")
  
@@ -1347,11 +2222,11 @@ elif "Spieltage 📊" in menu:
         zeige_spieltag_zusammenfassung(ausgewaehlter_spieltag, df_log)
  
 # ---------------------
-# TURNIER ROUTING
+# TURNIER
 # ---------------------
 elif "Turnier" in menu:
     turnier_main()
-
+ 
 # ---------------------
 # ADMIN
 # ---------------------
@@ -1389,929 +2264,3 @@ elif "Admin 🔐" in menu:
         if st.button("🗑 Spielplan in DB löschen"):
             loesche_spielplan_db()
             st.success("Spielplan gelöscht.")
-
-# =====================================================
-# TURNIER
-# =====================================================
-# Benötigt Supabase-Tabelle:
-#   CREATE TABLE turniere (
-#     id INTEGER PRIMARY KEY,
-#     name TEXT NOT NULL DEFAULT 'Turnier',
-#     status TEXT NOT NULL DEFAULT 'setup',
-#     config JSONB NOT NULL DEFAULT '{}',
-#     gruppen JSONB NOT NULL DEFAULT '{}',
-#     gruppen_spiele JSONB NOT NULL DEFAULT '[]',
-#     ko_spiele JSONB NOT NULL DEFAULT '[]',
-#     qualifizierte JSONB NOT NULL DEFAULT '{}',
-#     erstellt_am TIMESTAMPTZ DEFAULT NOW()
-#   );
-# =====================================================
-
-TURNIER_BOARDS = 4
-
-# --- Supabase-Hilfsfunktionen ---
-
-@st.cache_data(ttl=10)
-def lade_turnier():
-    try:
-        sb = get_supabase()
-        res = sb.table("turniere").select("*").eq("id", 1).execute()
-        if not res.data:
-            return None
-        row = res.data[0]
-        return {
-            "name": row.get("name", "Turnier"),
-            "status": row.get("status", "setup"),
-            "config": row.get("config") or {},
-            "gruppen": row.get("gruppen") or {},
-            "gruppen_spiele": row.get("gruppen_spiele") or [],
-            "ko_spiele": row.get("ko_spiele") or [],
-            "qualifizierte": row.get("qualifizierte") or {}
-        }
-    except Exception:
-        return None
-
-def speichere_turnier(data):
-    sb = get_supabase()
-    sb.table("turniere").upsert({
-        "id": 1,
-        "name": data.get("name", "Turnier"),
-        "status": data.get("status", "setup"),
-        "config": data.get("config", {}),
-        "gruppen": data.get("gruppen", {}),
-        "gruppen_spiele": data.get("gruppen_spiele", []),
-        "ko_spiele": data.get("ko_spiele", []),
-        "qualifizierte": data.get("qualifizierte", {})
-    }).execute()
-    lade_turnier.clear()
-
-def loesche_turnier():
-    sb = get_supabase()
-    sb.table("turniere").delete().eq("id", 1).execute()
-    lade_turnier.clear()
-
-# --- Logik ---
-
-def t_erstelle_gruppen(teilnehmer, n_gruppen):
-    """Verteilt Teilnehmer zufällig auf Gruppen (Snake-Seeding)."""
-    zuf = teilnehmer.copy()
-    random.shuffle(zuf)
-    buchstaben = "ABCDEFGHIJKLMNOP"
-    gruppen = {buchstaben[i]: [] for i in range(n_gruppen)}
-    for idx, t in enumerate(zuf):
-        gruppen[buchstaben[idx % n_gruppen]].append(t)
-    return gruppen
-
-def t_erstelle_gruppenspiele(gruppen, boards):
-    """Round-Robin-Spiele je Gruppe, interleaved für optimale Board-Verteilung."""
-    gruppen_paarungen = {}
-    for gk in sorted(gruppen.keys()):
-        m = gruppen[gk]
-        paarungen = []
-        for i in range(len(m)):
-            for j in range(i + 1, len(m)):
-                paarungen.append((m[i], m[j]))
-        gruppen_paarungen[gk] = paarungen
-
-    spiele = []
-    board_counter = 0
-    max_p = max(len(p) for p in gruppen_paarungen.values()) if gruppen_paarungen else 0
-
-    for round_idx in range(max_p):
-        for gk in sorted(gruppen_paarungen.keys()):
-            if round_idx < len(gruppen_paarungen[gk]):
-                a, b = gruppen_paarungen[gk][round_idx]
-                spiele.append({
-                    "id": len(spiele),
-                    "phase": "gruppe",
-                    "gruppe": gk,
-                    "spieler_a": a,
-                    "spieler_b": b,
-                    "board": (board_counter % boards) + 1,
-                    "legs_a": None,
-                    "legs_b": None,
-                    "avg_a": None,
-                    "avg_b": None,
-                    "abgeschlossen": False
-                })
-                board_counter += 1
-    return spiele
-
-def t_berechne_tabelle(gruppe_key, mitglieder, gruppen_spiele):
-    """Berechnet die Tabelle einer Gruppe."""
-    tab = {t: {"Sp": 0, "S": 0, "N": 0, "+L": 0, "-L": 0, "Diff": 0,
-               "Avg": 0.0, "Pts": 0, "_avgs": []} for t in mitglieder}
-    for sp in gruppen_spiele:
-        if sp.get("phase") != "gruppe" or sp.get("gruppe") != gruppe_key:
-            continue
-        if not sp.get("abgeschlossen"):
-            continue
-        a, b = sp["spieler_a"], sp["spieler_b"]
-        la, lb = sp.get("legs_a") or 0, sp.get("legs_b") or 0
-        avga, avgb = sp.get("avg_a") or 0.0, sp.get("avg_b") or 0.0
-        if a not in tab or b not in tab:
-            continue
-        tab[a]["Sp"] += 1; tab[b]["Sp"] += 1
-        tab[a]["+L"] += la; tab[a]["-L"] += lb
-        tab[b]["+L"] += lb; tab[b]["-L"] += la
-        tab[a]["_avgs"].append(avga); tab[b]["_avgs"].append(avgb)
-        if la > lb:
-            tab[a]["Pts"] += 2; tab[a]["S"] += 1; tab[b]["N"] += 1
-        elif lb > la:
-            tab[b]["Pts"] += 2; tab[b]["S"] += 1; tab[a]["N"] += 1
-        else:
-            tab[a]["Pts"] += 1; tab[b]["Pts"] += 1
-    result = []
-    for t, s in tab.items():
-        s["Diff"] = s["+L"] - s["-L"]
-        s["Avg"] = round(sum(s["_avgs"]) / len(s["_avgs"]), 1) if s["_avgs"] else 0.0
-        result.append((t, s))
-    result.sort(key=lambda x: (-x[1]["Pts"], -x[1]["Diff"], -x[1]["Avg"]))
-    return result
-
-def t_erstelle_ko_spiele(n_qualifizierte):
-    """Erstellt leere KO-Matches für Single-Elimination-Bracket."""
-    bracket_size = 1
-    while bracket_size < n_qualifizierte:
-        bracket_size *= 2
-    total_r = int(math.log2(bracket_size))
-    namen = ["Finale", "Halbfinale", "Viertelfinale", "Achtelfinale",
-             "16tel-Finale", "32tel-Finale"]
-    ko = []
-    mid = 0
-    for r in range(total_r):
-        n_m = bracket_size // (2 ** (r + 1))
-        name_idx = total_r - 1 - r
-        rname = namen[name_idx] if name_idx < len(namen) else f"Runde {r + 1}"
-        for m in range(n_m):
-            ko.append({
-                "id": mid, "runde_idx": r, "runde_name": rname, "match_nr": m,
-                "spieler_a": None, "spieler_b": None, "board": None,
-                "legs_a": None, "legs_b": None, "avg_a": None, "avg_b": None,
-                "abgeschlossen": False, "sieger": None
-            })
-            mid += 1
-    return ko
-
-def t_get_qualifizierte(gruppen, gruppen_spiele, weiter_pro_gruppe):
-    """Gibt die Qualifizierten in Seeding-Reihenfolge zurück."""
-    positionen = {}
-    for gk in sorted(gruppen.keys()):
-        tab = t_berechne_tabelle(gk, gruppen[gk], gruppen_spiele)
-        positionen[gk] = [name for name, _ in tab]
-    qual = []
-    for pos in range(weiter_pro_gruppe):
-        for gk in sorted(gruppen.keys()):
-            if pos < len(positionen[gk]):
-                qual.append(positionen[gk][pos])
-    return qual
-
-def t_befuelle_ko_erste_runde(ko_spiele, qualifizierte, boards):
-    """Befüllt die erste KO-Runde mit Qualifizierten (Seeded Snake-Bracket)."""
-    if not ko_spiele:
-        return ko_spiele
-    max_r = max(s["runde_idx"] for s in ko_spiele)
-    erste = sorted([s for s in ko_spiele if s["runde_idx"] == max_r],
-                   key=lambda x: x["match_nr"])
-    n = len(qualifizierte)
-    n_slots = len(erste) * 2
-    seeded = qualifizierte[:] + ["BYE"] * (n_slots - n)
-    bc = 0
-    for i, sp in enumerate(erste):
-        s1 = seeded[i]
-        s2 = seeded[n_slots - 1 - i]
-        sp["spieler_a"] = s1
-        sp["spieler_b"] = s2
-        if s2 == "BYE":
-            sp["abgeschlossen"] = True
-            sp["sieger"] = s1
-            sp["legs_a"] = 1
-            sp["legs_b"] = 0
-            sp["avg_a"] = 0.0
-            sp["avg_b"] = 0.0
-        else:
-            sp["board"] = (bc % boards) + 1
-            bc += 1
-    return ko_spiele
-
-def t_propagiere_sieger(ko_spiele, boards):
-    """Trägt Sieger in die nächste KO-Runde ein und vergibt Boards."""
-    if not ko_spiele:
-        return ko_spiele
-    max_r = max(s["runde_idx"] for s in ko_spiele)
-    bc = sum(1 for s in ko_spiele if s.get("board") is not None)
-    for r in range(max_r, 0, -1):
-        runde = sorted([s for s in ko_spiele if s["runde_idx"] == r],
-                       key=lambda x: x["match_nr"])
-        naechste = sorted([s for s in ko_spiele if s["runde_idx"] == r - 1],
-                          key=lambda x: x["match_nr"])
-        for sp in runde:
-            if not sp.get("abgeschlossen") or not sp.get("sieger"):
-                continue
-            nm = sp["match_nr"] // 2
-            slot = sp["match_nr"] % 2
-            for ns in naechste:
-                if ns["match_nr"] == nm:
-                    if slot == 0:
-                        ns["spieler_a"] = sp["sieger"]
-                    else:
-                        ns["spieler_b"] = sp["sieger"]
-                    if (ns.get("spieler_a") and ns.get("spieler_b")
-                            and ns["board"] is None and not ns["abgeschlossen"]):
-                        ns["board"] = (bc % boards) + 1
-                        bc += 1
-    return ko_spiele
-
-def t_bracket_html(ko_spiele):
-    """Rendert das KO-Bracket als HTML."""
-    if not ko_spiele:
-        return ""
-    max_r = max(s["runde_idx"] for s in ko_spiele)
-    n_first = len([s for s in ko_spiele if s["runde_idx"] == max_r])
-    MATCH_H = 72
-    total_h = max(n_first * MATCH_H, 120)
-
-    css = """<style>
-.brk{display:flex;gap:0;overflow-x:auto;padding:16px;background:#0a1020;border-radius:12px;align-items:stretch;}
-.brk-col{display:flex;flex-direction:column;align-items:stretch;min-width:170px;}
-.brk-col+.brk-col{margin-left:0;}
-.brk-head{font-size:11px;color:#6b7fa3;text-transform:uppercase;letter-spacing:1px;
-    text-align:center;padding:4px 8px;background:#1a2540;border-radius:3px;margin-bottom:8px;white-space:nowrap;}
-.brk-matches{display:flex;flex-direction:column;justify-content:space-around;flex:1;}
-.brk-match{display:flex;flex-direction:column;gap:2px;position:relative;}
-.brk-board{font-size:10px;color:#4a5568;text-align:center;margin-bottom:1px;}
-.brk-p{padding:5px 10px;background:#1e2d45;border-radius:4px;font-size:12px;
-    color:#9bacc8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;}
-.brk-p.win{color:#22c55e;font-weight:700;}
-.brk-p.tbd{color:#374151;font-style:italic;}
-.brk-p.bye{color:#374151;text-decoration:line-through;}
-.brk-connector{width:18px;display:flex;flex-direction:column;justify-content:space-around;
-    align-self:stretch;position:relative;}
-</style>"""
-
-    def p_cls(name, is_win):
-        if not name:
-            return "tbd"
-        if name == "BYE":
-            return "bye"
-        if is_win:
-            return "win"
-        return ""
-
-    html = css + "<div class='brk'>"
-    for r in range(max_r, -1, -1):
-        runde_spiele = sorted([s for s in ko_spiele if s["runde_idx"] == r],
-                               key=lambda x: x["match_nr"])
-        rname = runde_spiele[0]["runde_name"] if runde_spiele else ""
-        html += f"<div class='brk-col'><div class='brk-head'>{rname}</div>"
-        html += f"<div class='brk-matches' style='height:{total_h}px;'>"
-        for sp in runde_spiele:
-            la = sp.get("legs_a")
-            lb = sp.get("legs_b")
-            done = sp.get("abgeschlossen", False)
-            win_a = done and la is not None and lb is not None and la > lb
-            win_b = done and la is not None and lb is not None and lb > la
-            pa = sp.get("spieler_a") or "TBD"
-            pb = sp.get("spieler_b") or "TBD"
-            la_str = f" <small>({la})</small>" if done and la is not None else ""
-            lb_str = f" <small>({lb})</small>" if done and lb is not None else ""
-            board_h = (f"<div class='brk-board'>Board {sp['board']}</div>"
-                       if sp.get("board") else "<div class='brk-board'>&nbsp;</div>")
-            html += (f"<div class='brk-match'>{board_h}"
-                     f"<div class='brk-p {p_cls(pa, win_a)}'>{pa}{la_str}</div>"
-                     f"<div class='brk-p {p_cls(pb, win_b)}'>{pb}{lb_str}</div></div>")
-        html += "</div></div>"
-        # Connector between rounds
-        if r > 0:
-            html += "<div class='brk-connector'></div>"
-    html += "</div>"
-    return html
-
-# --- UI-Abschnitte ---
-
-def _t_setup_ui():
-    """Formular für ein neues Turnier."""
-    st.markdown("""
-    <div style='text-align:center;padding:30px 0 10px 0;'>
-        <div style='font-size:48px;'>🏆</div>
-        <div style='font-size:22px;font-weight:700;color:#fff;margin-top:8px;'>Neues Turnier erstellen</div>
-        <div style='font-size:13px;color:#6b7fa3;margin-top:4px;'>Kein aktives Turnier vorhanden</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    with st.form("neues_turnier_form"):
-        name = st.text_input("Turniername", placeholder="z.B. Vereinsmeisterschaft 2026")
-
-        st.markdown("#### Modus")
-        st.selectbox("Turniermodus", ["Gruppen + KO"], disabled=True)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("#### Gruppenphase")
-            n_teilnehmer = st.number_input("Anzahl Teilnehmer", 4, 32, 8, 1)
-            n_gruppen = st.number_input("Anzahl Gruppen", 1, 8, 2, 1)
-            weiter = st.number_input("Weiterkommer pro Gruppe", 1, 4, 2, 1)
-            legs_g = st.selectbox("Legs pro Spiel (Gruppe)", [3, 5, 7], index=0)
-        with col2:
-            st.markdown("#### KO-Phase")
-            legs_k = st.selectbox("Legs pro Spiel (KO)", [5, 7, 9], index=0)
-
-            n_qual = int(n_gruppen) * int(weiter)
-            bracket_size = 1
-            while bracket_size < n_qual:
-                bracket_size *= 2
-            st.markdown("&nbsp;")
-            st.markdown("**Bracket-Vorschau:**")
-            if n_qual == bracket_size:
-                st.success(f"✅ {n_qual} Qualifizierte → sauberes {bracket_size}er-Bracket")
-            else:
-                byes = bracket_size - n_qual
-                st.warning(f"⚠️ {n_qual} Qualifizierte → {bracket_size}er-Bracket ({byes} Freilos{'e' if byes>1 else ''})")
-            n_runden = int(math.log2(bracket_size))
-            runden_namen = ["Finale", "Halbfinale", "Viertelfinale", "Achtelfinale",
-                            "16tel-Finale", "32tel-Finale"]
-            for ri in range(n_runden - 1, -1, -1):
-                name_idx = n_runden - 1 - ri
-                rn = runden_namen[name_idx] if name_idx < len(runden_namen) else f"Runde {ri+1}"
-                n_m = bracket_size // (2 ** (ri + 1))
-                st.caption(f"→ {rn}: {n_m} Spiel{'e' if n_m>1 else ''}")
-
-        submitted = st.form_submit_button("🏆 Turnier erstellen", type="primary")
-        if submitted:
-            if not name.strip():
-                st.error("Bitte einen Turniernamen eingeben.")
-            else:
-                config = {
-                    "modus": "gruppen_ko",
-                    "n_teilnehmer": int(n_teilnehmer),
-                    "n_gruppen": int(n_gruppen),
-                    "weiter_pro_gruppe": int(weiter),
-                    "legs_gruppen": int(legs_g),
-                    "legs_ko": int(legs_k),
-                    "teilnehmer": []
-                }
-                speichere_turnier({
-                    "name": name.strip(),
-                    "status": "auslosung",
-                    "config": config,
-                    "gruppen": {},
-                    "gruppen_spiele": [],
-                    "ko_spiele": [],
-                    "qualifizierte": {}
-                })
-                st.rerun()
-
-
-def _t_auslosung_ui(turnier):
-    """Teilnehmer eingeben und Gruppen auslosen."""
-    config = turnier.get("config", {})
-    n_tln = config.get("n_teilnehmer", 8)
-    n_grp = config.get("n_gruppen", 2)
-    weiter = config.get("weiter_pro_gruppe", 2)
-    legs_g = config.get("legs_gruppen", 3)
-    legs_k = config.get("legs_ko", 5)
-
-    st.markdown(f"""
-    <div style='background:#1a2540;border-radius:8px;padding:14px 18px;margin-bottom:20px;display:flex;flex-wrap:wrap;gap:20px;'>
-        <div><div style='font-size:11px;color:#6b7fa3;'>Teilnehmer</div><div style='font-size:20px;font-weight:700;color:#fff;'>{n_tln}</div></div>
-        <div><div style='font-size:11px;color:#6b7fa3;'>Gruppen</div><div style='font-size:20px;font-weight:700;color:#fff;'>{n_grp}</div></div>
-        <div><div style='font-size:11px;color:#6b7fa3;'>Weiterkommer/Gruppe</div><div style='font-size:20px;font-weight:700;color:#fff;'>{weiter}</div></div>
-        <div><div style='font-size:11px;color:#6b7fa3;'>Legs Gruppe</div><div style='font-size:20px;font-weight:700;color:#fff;'>Best of {legs_g}</div></div>
-        <div><div style='font-size:11px;color:#6b7fa3;'>Legs KO</div><div style='font-size:20px;font-weight:700;color:#fff;'>Best of {legs_k}</div></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("### Teilnehmer")
-    df_spieler_liste = list(lade_spieler().index)
-    eingabe_modus = st.radio("Eingabe", ["Aus Spielerliste", "Manuell"], horizontal=True, label_visibility="collapsed")
-
-    teilnehmer = []
-    if eingabe_modus == "Aus Spielerliste":
-        ausgewaehlt = st.multiselect(
-            f"Spieler auswählen ({n_tln} benötigt)",
-            df_spieler_liste
-        )
-        teilnehmer = ausgewaehlt
-    else:
-        text = st.text_area(
-            f"Namen eingeben (einer pro Zeile, {n_tln} benötigt)",
-            height=200, placeholder="Max Mustermann\nAnna Beispiel\n..."
-        )
-        teilnehmer = [t.strip() for t in text.strip().split("\n") if t.strip()]
-
-    n_aktuell = len(teilnehmer)
-    if n_aktuell > 0:
-        if n_aktuell == n_tln:
-            st.success(f"✅ {n_aktuell}/{n_tln} Teilnehmer – bereit zur Auslosung!")
-        else:
-            st.warning(f"⚠️ {n_aktuell}/{n_tln} Teilnehmer")
-
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        if st.button("🎲 Gruppen auslosen!", disabled=(n_aktuell != n_tln), type="primary", use_container_width=True):
-            gruppen = t_erstelle_gruppen(teilnehmer, n_grp)
-            gruppen_spiele = t_erstelle_gruppenspiele(gruppen, TURNIER_BOARDS)
-            neue_config = dict(config)
-            neue_config["teilnehmer"] = teilnehmer
-            speichere_turnier({
-                **turnier,
-                "status": "gruppen",
-                "config": neue_config,
-                "gruppen": gruppen,
-                "gruppen_spiele": gruppen_spiele
-            })
-            st.rerun()
-    with col2:
-        if st.button("⚙️ Einstellungen ändern", use_container_width=True):
-            loesche_turnier()
-            st.rerun()
-
-
-def _t_uebersicht_ui(turnier):
-    """Übersicht: Status, Gruppentabellen, Champion."""
-    config = turnier.get("config", {})
-    gruppen = turnier.get("gruppen", {})
-    gs = turnier.get("gruppen_spiele", [])
-    ko = turnier.get("ko_spiele", [])
-    status = turnier.get("status", "gruppen")
-    weiter_n = config.get("weiter_pro_gruppe", 2)
-
-    # Metriken
-    total_g = len(gs)
-    done_g = sum(1 for s in gs if s.get("abgeschlossen"))
-    real_ko = [s for s in ko if s.get("spieler_b") != "BYE"]
-    done_k = sum(1 for s in real_ko if s.get("abgeschlossen"))
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Gruppenspiele", f"{done_g}/{total_g}")
-    col2.metric("KO-Spiele", f"{done_k}/{len(real_ko)}" if ko else "–")
-    col3.metric("Qualifizierte", f"{weiter_n * len(gruppen)}")
-    col4.metric("Boards", str(TURNIER_BOARDS))
-
-    st.markdown("---")
-
-    # Champion
-    if status == "abgeschlossen" and ko:
-        finale = [s for s in ko if s["runde_idx"] == 0]
-        if finale and finale[0].get("sieger"):
-            st.markdown(f"""
-            <div style='background:linear-gradient(135deg,#1a1a0e,#2a2000);padding:28px;border-radius:14px;
-                text-align:center;margin-bottom:24px;border:2px solid #f59e0b88;'>
-                <div style='font-size:52px;'>🏆</div>
-                <div style='font-size:34px;font-weight:900;color:#f59e0b;margin-top:8px;'>{finale[0]['sieger']}</div>
-                <div style='font-size:13px;color:#92814a;letter-spacing:3px;text-transform:uppercase;margin-top:4px;'>Turniersieger</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    # Gruppentabellen
-    if gruppen:
-        st.markdown("### Gruppentabellen")
-        cols = st.columns(min(len(gruppen), 4))
-        for i, (gk, mitglieder) in enumerate(sorted(gruppen.items())):
-            tab = t_berechne_tabelle(gk, mitglieder, gs)
-            with cols[i % len(cols)]:
-                st.markdown(f"**Gruppe {gk}**")
-                rows = ""
-                for pos, (name, s) in enumerate(tab):
-                    bg = "background:#0f2a1a;" if pos < weiter_n else ""
-                    badge = "🟢" if pos < weiter_n else "·"
-                    rows += (
-                        f"<tr style='{bg}'>"
-                        f"<td style='padding:4px 6px;font-size:12px;'>{badge}</td>"
-                        f"<td style='padding:4px 6px;font-size:13px;font-weight:600;'>{name}</td>"
-                        f"<td style='padding:4px 6px;font-size:13px;text-align:center;font-weight:700;'>{s['Pts']}</td>"
-                        f"<td style='padding:4px 6px;font-size:12px;text-align:center;color:#888;'>{s['Diff']:+d}</td>"
-                        f"<td style='padding:4px 6px;font-size:12px;text-align:center;color:#6b7fa3;'>{s['Avg']}</td>"
-                        f"</tr>"
-                    )
-                st.markdown(
-                    f"<table style='width:100%;border-collapse:collapse;'>"
-                    f"<thead><tr><th></th><th style='font-size:10px;color:#6b7fa3;text-align:left;padding:2px 6px;'>Spieler</th>"
-                    f"<th style='font-size:10px;color:#6b7fa3;'>Pts</th><th style='font-size:10px;color:#6b7fa3;'>+/-</th>"
-                    f"<th style='font-size:10px;color:#6b7fa3;'>Avg</th></tr></thead>"
-                    f"<tbody>{rows}</tbody></table>",
-                    unsafe_allow_html=True
-                )
-
-    # Qualifizierte
-    if status in ("ko", "abgeschlossen") and turnier.get("qualifizierte"):
-        st.markdown("---")
-        st.markdown("### Qualifizierte für KO-Phase")
-        qual = turnier.get("qualifizierte", {})
-        qual_cols = st.columns(min(len(qual), 4))
-        for i, (seed, name) in enumerate(sorted(qual.items(), key=lambda x: int(x[0]))):
-            with qual_cols[i % len(qual_cols)]:
-                st.markdown(
-                    f"<div style='background:#1a2540;border-radius:6px;padding:6px 12px;margin-bottom:4px;'>"
-                    f"<span style='color:#6b7fa3;font-size:11px;'>Seed {seed}</span> "
-                    f"<span style='font-weight:700;font-size:14px;'>{name}</span></div>",
-                    unsafe_allow_html=True
-                )
-
-
-def _t_gruppenphase_ui(turnier, readonly=False):
-    """Spielplan + Gruppentabellen der Gruppenphase."""
-    config = turnier.get("config", {})
-    gruppen = turnier.get("gruppen", {})
-    gs = turnier.get("gruppen_spiele", [])
-    weiter_n = config.get("weiter_pro_gruppe", 2)
-
-    if not gruppen:
-        st.info("Noch keine Gruppen ausgelost.")
-        return
-
-    if not readonly:
-        pw_key = "t_gp_pw"
-        pw = st.text_input("Passwort zum Eintragen", type="password", key=pw_key)
-        admin_mode = (pw == PASSWORT)
-        if admin_mode:
-            st.caption("🔒 Ergebnis sperren · 🔓 Entsperren")
-    else:
-        admin_mode = False
-
-    sub = st.tabs(["📅 Spielplan (nach Boards)", "📊 Gruppentabellen"])
-
-    # --- SPIELPLAN ---
-    with sub[0]:
-        board_tab_labels = [f"Board {b}" for b in range(1, TURNIER_BOARDS + 1)] + ["Alle Spiele"]
-        board_tabs = st.tabs(board_tab_labels)
-
-        for board_idx in range(TURNIER_BOARDS + 1):
-            with board_tabs[board_idx]:
-                if board_idx < TURNIER_BOARDS:
-                    board_nr = board_idx + 1
-                    sicht_spiele = [s for s in gs if s.get("board") == board_nr]
-                else:
-                    sicht_spiele = gs
-
-                if not sicht_spiele:
-                    st.info("Keine Spiele auf diesem Board.")
-                    continue
-
-                aktion = None
-                live_ergebnisse = {}
-
-                for sp in sicht_spiele:
-                    sid = sp["id"]
-                    a, b = sp["spieler_a"], sp["spieler_b"]
-                    gk = sp.get("gruppe", "?")
-                    ist_fertig = sp.get("abgeschlossen", False)
-                    board_label = f"<span style='background:#2a3555;border-radius:3px;padding:1px 6px;font-size:11px;color:#6b7fa3;'>Gr.{gk}</span>"
-
-                    if ist_fertig:
-                        la = sp.get("legs_a", 0); lb = sp.get("legs_b", 0)
-                        avga = sp.get("avg_a", 0.0); avgb = sp.get("avg_b", 0.0)
-                        cols = st.columns([1, 9, 1] if admin_mode else [1, 10])
-                        with cols[0]:
-                            st.markdown(board_label, unsafe_allow_html=True)
-                        with cols[1]:
-                            gew_style = lambda p: "color:#22c55e;font-weight:700;" if (p == a and la > lb) or (p == b and lb > la) else ""
-                            st.markdown(
-                                f"<div style='background:#1a2a1a;border-radius:6px;padding:7px 12px;'>"
-                                f"✅ <span style='{gew_style(a)}'>{a}</span>"
-                                f" <span style='color:#f59e0b;font-weight:700;font-size:15px;'>{int(la)}:{int(lb)}</span> "
-                                f"<span style='{gew_style(b)}'>{b}</span>"
-                                f"<span style='color:#6b7fa3;font-size:12px;'> · Avg {avga:.1f} / {avgb:.1f}</span></div>",
-                                unsafe_allow_html=True
-                            )
-                        if admin_mode and not readonly and len(cols) > 2:
-                            with cols[2]:
-                                if st.button("🔓", key=f"t_unlock_g_{sid}_{board_idx}"):
-                                    aktion = ("unlock", sid)
-                        live_ergebnisse[sid] = sp
-                    else:
-                        if admin_mode and not readonly:
-                            c = st.columns([1, 2, 2, 1, 1, 1, 1, 1])
-                            with c[0]:
-                                st.markdown(board_label, unsafe_allow_html=True)
-                            with c[1]:
-                                st.markdown(f"**{a}**")
-                            with c[2]:
-                                st.markdown(f"**{b}**")
-                            with c[3]:
-                                la = st.number_input("", 0, step=1, value=sp.get("legs_a") or 0,
-                                                     key=f"t_gla_{sid}_{board_idx}", label_visibility="collapsed")
-                            with c[4]:
-                                lb = st.number_input("", 0, step=1, value=sp.get("legs_b") or 0,
-                                                     key=f"t_glb_{sid}_{board_idx}", label_visibility="collapsed")
-                            with c[5]:
-                                avga = st.number_input("", 0.0, step=0.1, value=sp.get("avg_a") or 0.0,
-                                                       key=f"t_gavga_{sid}_{board_idx}", label_visibility="collapsed")
-                            with c[6]:
-                                avgb = st.number_input("", 0.0, step=0.1, value=sp.get("avg_b") or 0.0,
-                                                       key=f"t_gavgb_{sid}_{board_idx}", label_visibility="collapsed")
-                            with c[7]:
-                                if st.button("🔒", key=f"t_lock_g_{sid}_{board_idx}"):
-                                    aktion = ("lock", sid, la, lb, avga, avgb)
-                            live_ergebnisse[sid] = {**sp, "legs_a": la, "legs_b": lb, "avg_a": avga, "avg_b": avgb}
-                        else:
-                            c = st.columns([1, 9])
-                            with c[0]:
-                                st.markdown(board_label, unsafe_allow_html=True)
-                            with c[1]:
-                                st.markdown(f"⏳ **{a}** vs **{b}**")
-                            live_ergebnisse[sid] = sp
-
-                if aktion and admin_mode and not readonly:
-                    neue_gs = []
-                    for sp in gs:
-                        sp = dict(sp)
-                        if sp["id"] == aktion[1]:
-                            if aktion[0] == "lock" and len(aktion) > 2:
-                                sp["legs_a"] = aktion[2]; sp["legs_b"] = aktion[3]
-                                sp["avg_a"] = aktion[4]; sp["avg_b"] = aktion[5]
-                                sp["abgeschlossen"] = True
-                            elif aktion[0] == "unlock":
-                                sp["abgeschlossen"] = False
-                        neue_gs.append(sp)
-                    speichere_turnier({**turnier, "gruppen_spiele": neue_gs})
-                    st.rerun()
-
-        # Gruppenphase abschließen
-        if admin_mode and not readonly:
-            st.markdown("---")
-            fehlend = [s for s in gs if not s.get("abgeschlossen")]
-            if not fehlend:
-                st.success("✅ Alle Gruppenspiele eingetragen!")
-                if st.button("🏆 Gruppenphase abschließen & KO-Phase starten", type="primary"):
-                    qual_list = t_get_qualifizierte(gruppen, gs, config.get("weiter_pro_gruppe", 2))
-                    ko_spiele = t_erstelle_ko_spiele(len(qual_list))
-                    ko_spiele = t_befuelle_ko_erste_runde(ko_spiele, qual_list, TURNIER_BOARDS)
-                    ko_spiele = t_propagiere_sieger(ko_spiele, TURNIER_BOARDS)
-                    qual_dict = {str(i + 1): n for i, n in enumerate(qual_list)}
-                    speichere_turnier({
-                        **turnier,
-                        "status": "ko",
-                        "ko_spiele": ko_spiele,
-                        "qualifizierte": qual_dict
-                    })
-                    st.rerun()
-            else:
-                st.warning(f"Noch {len(fehlend)} Spiel(e) ausstehend. Alle Ergebnisse eintragen, um zur KO-Phase zu wechseln.")
-
-    # --- GRUPPENTABELLEN ---
-    with sub[1]:
-        for gk in sorted(gruppen.keys()):
-            mitglieder = gruppen[gk]
-            tab = t_berechne_tabelle(gk, mitglieder, gs)
-            st.markdown(f"### Gruppe {gk}")
-            rows = ""
-            for pos, (name, s) in enumerate(tab):
-                bg = "background:#0a1f12;" if pos < weiter_n else ""
-                badge = "🟢" if pos < weiter_n else "🔴"
-                diff_col = "#22c55e" if s["Diff"] > 0 else "#ef4444" if s["Diff"] < 0 else "#9bacc8"
-                rows += (
-                    f"<tr style='{bg}border-bottom:1px solid #1e2d45;'>"
-                    f"<td style='padding:9px 10px;font-size:14px;'>{badge} {pos+1}.</td>"
-                    f"<td style='padding:9px 10px;font-size:15px;font-weight:700;'>{name}</td>"
-                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;color:#6b7fa3;'>{s['Sp']}</td>"
-                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;color:#22c55e;'>{s['S']}</td>"
-                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;color:#ef4444;'>{s['N']}</td>"
-                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;'>{s['+L']}:{s['-L']}</td>"
-                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;color:{diff_col};'>{s['Diff']:+d}</td>"
-                    f"<td style='padding:9px 8px;text-align:center;font-size:13px;color:#f59e0b;'>{s['Avg']}</td>"
-                    f"<td style='padding:9px 10px;text-align:center;font-size:16px;font-weight:900;color:#fff;'>{s['Pts']}</td>"
-                    f"</tr>"
-                )
-            header = (
-                "<tr style='border-bottom:2px solid #2a3555;'>"
-                "<th style='padding:6px 10px;font-size:10px;color:#6b7fa3;text-align:left;'>#</th>"
-                "<th style='padding:6px 10px;font-size:10px;color:#6b7fa3;text-align:left;'>Spieler</th>"
-                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>Sp</th>"
-                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>S</th>"
-                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>N</th>"
-                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>Legs</th>"
-                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>Diff</th>"
-                "<th style='padding:6px 8px;font-size:10px;color:#6b7fa3;'>Avg</th>"
-                "<th style='padding:6px 10px;font-size:10px;color:#6b7fa3;'>Pts</th>"
-                "</tr>"
-            )
-            st.markdown(
-                f"<table style='width:100%;border-collapse:collapse;background:#111827;border-radius:8px;"
-                f"overflow:hidden;margin-bottom:24px;'>"
-                f"<thead>{header}</thead><tbody>{rows}</tbody></table>",
-                unsafe_allow_html=True
-            )
-            gruppe_spiele = [s for s in gs if s.get("gruppe") == gk]
-            with st.expander(f"Spiele Gruppe {gk} ({sum(1 for s in gruppe_spiele if s.get('abgeschlossen'))}/{len(gruppe_spiele)})"):
-                for sp in gruppe_spiele:
-                    if sp.get("abgeschlossen"):
-                        la, lb = sp.get("legs_a", 0), sp.get("legs_b", 0)
-                        avga, avgb = sp.get("avg_a", 0.0), sp.get("avg_b", 0.0)
-                        gew = sp["spieler_a"] if la > lb else sp["spieler_b"]
-                        st.markdown(
-                            f"✅ **{sp['spieler_a']}** {int(la)}:{int(lb)} **{sp['spieler_b']}** "
-                            f"<span style='color:#6b7fa3;font-size:12px;'>Avg {avga:.1f}/{avgb:.1f} · Board {sp.get('board', '?')}</span>",
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.markdown(f"⏳ **{sp['spieler_a']}** vs **{sp['spieler_b']}** · Board {sp.get('board', '?')}")
-
-
-def _t_ko_ui(turnier):
-    """KO-Phasen Spielplan mit Ergebniseintragung."""
-    ko = turnier.get("ko_spiele", [])
-    status = turnier.get("status", "ko")
-
-    if not ko:
-        st.info("Keine KO-Spiele vorhanden.")
-        return
-
-    pw = st.text_input("Passwort zum Eintragen", type="password", key="t_ko_pw")
-    admin_mode = (pw == PASSWORT)
-    if admin_mode:
-        st.caption("🔒 Ergebnis sperren · 🔓 Entsperren")
-
-    max_r = max(s["runde_idx"] for s in ko)
-
-    for r in range(max_r, -1, -1):
-        runde_spiele = sorted([s for s in ko if s["runde_idx"] == r], key=lambda x: x["match_nr"])
-        rname = runde_spiele[0]["runde_name"] if runde_spiele else f"Runde {r}"
-
-        st.markdown(f"### {rname}")
-        aktion = None
-
-        for sp in runde_spiele:
-            sid = sp["id"]
-            a = sp.get("spieler_a") or "TBD"
-            b = sp.get("spieler_b") or "TBD"
-
-            if b == "BYE":
-                st.markdown(
-                    f"<div style='background:#0f1f0f;border-radius:6px;padding:8px 12px;margin-bottom:4px;'>"
-                    f"🎯 <b>{a}</b> — <span style='color:#22c55e;'>Freilos (BYE)</span></div>",
-                    unsafe_allow_html=True
-                )
-                continue
-
-            ist_fertig = sp.get("abgeschlossen", False)
-            board_str = f"Board {sp['board']}" if sp.get("board") else "Board TBD"
-
-            if ist_fertig:
-                la, lb = sp.get("legs_a", 0), sp.get("legs_b", 0)
-                avga, avgb = sp.get("avg_a", 0.0), sp.get("avg_b", 0.0)
-                sieger = sp.get("sieger", "?")
-                cols = st.columns([8, 1] if admin_mode else [10])
-                with cols[0]:
-                    gew_a = la is not None and lb is not None and la > lb
-                    st.markdown(
-                        f"<div style='background:#1a2a1a;border-radius:6px;padding:9px 14px;margin-bottom:4px;'>"
-                        f"<span style='font-size:11px;color:#6b7fa3;'>{board_str}</span><br>"
-                        f"✅ <span style='{'color:#22c55e;font-weight:700;' if gew_a else ''}'>{a}</span>"
-                        f" <span style='color:#f59e0b;font-weight:700;font-size:16px;'>{int(la)}:{int(lb)}</span> "
-                        f"<span style='{'color:#22c55e;font-weight:700;' if not gew_a else ''}'>{b}</span>"
-                        f"<span style='color:#6b7fa3;font-size:12px;'> · Avg {avga:.1f}/{avgb:.1f}</span>"
-                        f"<span style='color:#22c55e;font-size:12px;font-weight:600;'> → {sieger}</span></div>",
-                        unsafe_allow_html=True
-                    )
-                if admin_mode and len(cols) > 1:
-                    with cols[1]:
-                        if st.button("🔓", key=f"t_unlock_ko_{sid}"):
-                            aktion = ("unlock", sid)
-            elif a == "TBD" or b == "TBD":
-                st.markdown(
-                    f"<div style='background:#111827;border-radius:6px;padding:8px 12px;margin-bottom:4px;color:#4b5563;'>"
-                    f"⏸ TBD vs TBD – wartet auf Vorrundenergebnis</div>",
-                    unsafe_allow_html=True
-                )
-            else:
-                if admin_mode:
-                    c = st.columns([2, 2, 1, 1, 1, 1, 1])
-                    with c[0]:
-                        st.markdown(f"**{a}**")
-                    with c[1]:
-                        st.markdown(f"**{b}**")
-                    with c[2]:
-                        la = st.number_input("", 0, step=1, value=0,
-                                             key=f"t_kola_{sid}", label_visibility="collapsed")
-                    with c[3]:
-                        lb = st.number_input("", 0, step=1, value=0,
-                                             key=f"t_kolb_{sid}", label_visibility="collapsed")
-                    with c[4]:
-                        avga = st.number_input("", 0.0, step=0.1, value=0.0,
-                                               key=f"t_koavga_{sid}", label_visibility="collapsed")
-                    with c[5]:
-                        avgb = st.number_input("", 0.0, step=0.1, value=0.0,
-                                               key=f"t_koavgb_{sid}", label_visibility="collapsed")
-                    with c[6]:
-                        if st.button("🔒", key=f"t_lock_ko_{sid}"):
-                            aktion = ("lock", sid, la, lb, avga, avgb)
-                else:
-                    st.markdown(
-                        f"<div style='background:#111827;border-radius:6px;padding:8px 12px;margin-bottom:4px;'>"
-                        f"⏳ <b>{a}</b> vs <b>{b}</b>"
-                        f"<span style='color:#6b7fa3;font-size:12px;'> · {board_str}</span></div>",
-                        unsafe_allow_html=True
-                    )
-
-        if aktion and admin_mode:
-            neue_ko = []
-            for sp in ko:
-                sp = dict(sp)
-                if sp["id"] == aktion[1]:
-                    if aktion[0] == "lock" and len(aktion) > 2:
-                        _, sid_a, la_v, lb_v, avga_v, avgb_v = aktion
-                        sp["legs_a"] = la_v; sp["legs_b"] = lb_v
-                        sp["avg_a"] = avga_v; sp["avg_b"] = avgb_v
-                        sp["abgeschlossen"] = True
-                        sp["sieger"] = sp["spieler_a"] if la_v > lb_v else sp["spieler_b"]
-                    elif aktion[0] == "unlock":
-                        sp["abgeschlossen"] = False
-                        sp["sieger"] = None
-                neue_ko.append(sp)
-            neue_ko = t_propagiere_sieger(neue_ko, TURNIER_BOARDS)
-            neue_status = turnier.get("status", "ko")
-            finale = [s for s in neue_ko if s["runde_idx"] == 0]
-            if finale and finale[0].get("abgeschlossen"):
-                neue_status = "abgeschlossen"
-            speichere_turnier({**turnier, "ko_spiele": neue_ko, "status": neue_status})
-            st.rerun()
-
-        st.markdown("---")
-
-
-def _t_baum_ui(turnier):
-    """Visueller Turnierbaum."""
-    ko = turnier.get("ko_spiele", [])
-    if not ko:
-        st.info("Der Turnierbaum wird nach Abschluss der Gruppenphase verfügbar.")
-        return
-    st.markdown("### Turnierbaum")
-    st.markdown(t_bracket_html(ko), unsafe_allow_html=True)
-    if turnier.get("status") == "abgeschlossen":
-        finale = [s for s in ko if s["runde_idx"] == 0]
-        if finale and finale[0].get("sieger"):
-            st.markdown(f"""
-            <div style='text-align:center;margin-top:24px;padding:24px;
-                background:linear-gradient(135deg,#1a1a0e,#2a2000);border-radius:14px;
-                border:2px solid #f59e0b88;'>
-                <div style='font-size:48px;'>🏆</div>
-                <div style='font-size:30px;font-weight:900;color:#f59e0b;margin-top:8px;'>{finale[0]['sieger']}</div>
-                <div style='font-size:12px;color:#92814a;letter-spacing:3px;text-transform:uppercase;margin-top:6px;'>Turniersieger</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-
-def turnier_main():
-    """Haupt-Dispatcher für den Turnier-Bereich."""
-    turnier = lade_turnier()
-    st.markdown("<h2 style='font-size:28px;'>🏆 Turnier</h2>", unsafe_allow_html=True)
-
-    if turnier is None:
-        _t_setup_ui()
-        return
-
-    status = turnier.get("status", "setup")
-    name = turnier.get("name", "Turnier")
-
-    status_map = {
-        "auslosung": ("🎲 Auslosung", "#f59e0b"),
-        "gruppen": ("⚽ Gruppenphase", "#3b82f6"),
-        "ko": ("🏆 KO-Phase", "#22c55e"),
-        "abgeschlossen": ("✅ Abgeschlossen", "#22c55e")
-    }
-    slabel, scolor = status_map.get(status, ("⚙️ Setup", "#6b7fa3"))
-
-    st.markdown(f"""
-    <div style='background:#1a2540;padding:14px 20px;border-radius:10px;margin-bottom:20px;
-        display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;'>
-        <div>
-            <div style='font-size:24px;font-weight:800;color:#fff;'>{name}</div>
-            <div style='font-size:12px;color:#6b7fa3;margin-top:2px;'>Modus: Gruppen + KO · {TURNIER_BOARDS} Boards</div>
-        </div>
-        <div style='background:{scolor}22;color:{scolor};padding:5px 14px;border-radius:20px;
-            font-size:13px;font-weight:700;border:1px solid {scolor}55;'>
-            {slabel}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if status == "auslosung":
-        tabs = st.tabs(["🎲 Auslosung"])
-        with tabs[0]:
-            _t_auslosung_ui(turnier)
-    elif status == "gruppen":
-        tabs = st.tabs(["📋 Übersicht", "⚽ Gruppenphase", "🌳 Turnierbaum"])
-        with tabs[0]:
-            _t_uebersicht_ui(turnier)
-        with tabs[1]:
-            _t_gruppenphase_ui(turnier)
-        with tabs[2]:
-            _t_baum_ui(turnier)
-    elif status in ("ko", "abgeschlossen"):
-        tabs = st.tabs(["📋 Übersicht", "⚽ Gruppenphase", "🏆 KO-Phase", "🌳 Turnierbaum"])
-        with tabs[0]:
-            _t_uebersicht_ui(turnier)
-        with tabs[1]:
-            _t_gruppenphase_ui(turnier, readonly=True)
-        with tabs[2]:
-            _t_ko_ui(turnier)
-        with tabs[3]:
-            _t_baum_ui(turnier)
-
-    st.markdown("---")
-    with st.expander("⚠️ Turnier verwalten"):
-        st.caption("Achtung: Das Löschen kann nicht rückgängig gemacht werden.")
-        if st.button("🗑 Turnier löschen", type="secondary"):
-            loesche_turnier()
-            st.rerun()
