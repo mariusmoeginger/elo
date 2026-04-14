@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import math
 from math import pow
-from datetime import datetime
+from datetime import datetime, timedelta
 from PIL import Image
 from supabase import create_client
 import random
@@ -16,6 +16,8 @@ import plotly.graph_objects as go
 START_ELO = 1000
 K_FAKTOR = 28
 PASSWORT = "bfelo"
+ 
+DAUER_KO = {"Achtelfinale": 15, "Viertelfinale": 25, "Halbfinale": 30, "Finale": 30}
  
 # ---------------------
 # SUPABASE VERBINDUNG
@@ -426,21 +428,89 @@ def zeige_spieler_popup(gew, df, df_log, rang_liste):
                 unsafe_allow_html=True)
  
 # =====================================================
-# TURNIER — NEU: 32 Teilnehmer, 8 Gruppen, manuell
-# =====================================================
-# Supabase-Tabelle "turniere" wird weiterverwendet.
-# Format:
-#   status: "setup" | "gruppen" | "ko" | "abgeschlossen"
-#   config: { boards: int }
-#   gruppen: { "A": ["Name1","Name2",...], ... }  (8 Gruppen à 4 Spieler)
-#   gruppen_spiele: [ { id, gruppe, spieler_a, spieler_b, board, legs_a, legs_b, abgeschlossen } ]
-#   ko_spiele: [ { id, runde_idx, runde_name, match_nr, spieler_a, spieler_b, board, legs_a, legs_b, abgeschlossen, sieger } ]
-#   qualifizierte: { "1": "Name", ... }
+# TIMING FUNKTIONEN
 # =====================================================
  
+def berechne_spielplan_zeiten(reihenfolge, locked_set, startzeit_str, dauer_min=15, boards=4):
+    """Berechnet Startzeiten und Board-Nummern für Auslosung-Spielplan."""
+    try:
+        start = datetime.strptime(startzeit_str, "%H:%M")
+    except Exception:
+        start = datetime.strptime("18:00", "%H:%M")
+    now = datetime.now()
+    # board_state: board_nr -> {"time": datetime, "locked": bool}
+    board_state = {}
+    result = {}
+    for i, orig_idx in enumerate(reihenfolge):
+        board_nr = (i % boards) + 1
+        if board_nr not in board_state:
+            game_time = start
+        else:
+            prev = board_state[board_nr]
+            if prev["locked"]:
+                game_time = now + timedelta(minutes=dauer_min)
+            else:
+                game_time = prev["time"] + timedelta(minutes=dauer_min)
+        is_locked = orig_idx in locked_set
+        board_state[board_nr] = {"time": game_time, "locked": is_locked}
+        result[orig_idx] = (game_time.strftime("%H:%M"), board_nr)
+    return result
+ 
+def berechne_gruppen_zeiten(gs, startzeit_str, dauer_min=15, boards=4):
+    """Berechnet Startzeiten für Turnier-Gruppenspiele (nach board)."""
+    try:
+        start = datetime.strptime(startzeit_str, "%H:%M")
+    except Exception:
+        start = datetime.strptime("18:00", "%H:%M")
+    now = datetime.now()
+    board_state = {}
+    result = {}
+    sorted_gs = sorted(gs, key=lambda x: x["id"])
+    for sp in sorted_gs:
+        board_nr = sp.get("board", 1)
+        if board_nr not in board_state:
+            game_time = start
+        else:
+            prev = board_state[board_nr]
+            if prev["locked"]:
+                game_time = now + timedelta(minutes=dauer_min)
+            else:
+                game_time = prev["time"] + timedelta(minutes=dauer_min)
+        is_locked = sp.get("abgeschlossen", False)
+        board_state[board_nr] = {"time": game_time, "locked": is_locked}
+        result[sp["id"]] = game_time.strftime("%H:%M")
+    return result
+ 
+def berechne_ko_zeiten(ko_spiele, startzeit_str, boards=4):
+    """Berechnet Startzeiten für KO-Runden (DAUER_KO pro Runde)."""
+    try:
+        start = datetime.strptime(startzeit_str, "%H:%M")
+    except Exception:
+        start = datetime.strptime("20:00", "%H:%M")
+    result = {}
+    if not ko_spiele:
+        return result
+    max_r = max(s["runde_idx"] for s in ko_spiele)
+    current_start = start
+    for r in range(max_r + 1):
+        runde = sorted([s for s in ko_spiele if s["runde_idx"] == r], key=lambda x: x["match_nr"])
+        if not runde:
+            continue
+        rname = runde[0]["runde_name"]
+        dauer = DAUER_KO.get(rname, 15)
+        for sp in runde:
+            result[sp["id"]] = current_start.strftime("%H:%M")
+        # Nächste Runde startet nach max. Board-Zeit dieser Runde
+        rounds_needed = math.ceil(len(runde) / boards)
+        current_start = current_start + timedelta(minutes=dauer * rounds_needed)
+    return result
+ 
+# =====================================================
+# TURNIER — 32 Teilnehmer, 8 Gruppen, manuell
+# =====================================================
 TURNIER_BOARDS = 4
 TURNIER_GRUPPEN = ["A","B","C","D","E","F","G","H"]
-TURNIER_PRO_GRUPPE = 4  # 32 Teilnehmer / 8 Gruppen
+TURNIER_PRO_GRUPPE = 4
  
 @st.cache_data(ttl=10)
 def lade_turnier():
@@ -481,20 +551,23 @@ def loesche_turnier():
     sb.table("turniere").delete().eq("id", 1).execute()
     lade_turnier.clear()
  
-# --- Tabelle berechnen (Sieger = meiste Legs) ---
+# --- Tabelle berechnen (inkl. Avg) ---
 def t_berechne_tabelle(gruppe_key, mitglieder, gruppen_spiele):
-    tab = {t: {"Sp": 0, "S": 0, "N": 0, "+L": 0, "-L": 0, "Diff": 0, "Pts": 0} for t in mitglieder}
+    tab = {t: {"Sp": 0, "S": 0, "N": 0, "+L": 0, "-L": 0, "Diff": 0, "Pts": 0, "AvgSum": 0.0} for t in mitglieder}
     for sp in gruppen_spiele:
         if sp.get("gruppe") != gruppe_key or not sp.get("abgeschlossen"):
             continue
         a, b = sp["spieler_a"], sp["spieler_b"]
         la, lb = sp.get("legs_a") or 0, sp.get("legs_b") or 0
+        avg_a = float(sp.get("avg_a") or 0.0)
+        avg_b = float(sp.get("avg_b") or 0.0)
         if a not in tab or b not in tab:
             continue
         tab[a]["Sp"] += 1; tab[b]["Sp"] += 1
         tab[a]["+L"] += la; tab[a]["-L"] += lb
         tab[b]["+L"] += lb; tab[b]["-L"] += la
-        # Sieger = wer mehr Legs hat
+        tab[a]["AvgSum"] += avg_a
+        tab[b]["AvgSum"] += avg_b
         if la > lb:
             tab[a]["Pts"] += 2; tab[a]["S"] += 1; tab[b]["N"] += 1
         elif lb > la:
@@ -504,21 +577,20 @@ def t_berechne_tabelle(gruppe_key, mitglieder, gruppen_spiele):
     result = []
     for t, s in tab.items():
         s["Diff"] = s["+L"] - s["-L"]
+        s["Avg"] = round(s["AvgSum"] / s["Sp"], 1) if s["Sp"] > 0 else 0.0
         result.append((t, s))
     result.sort(key=lambda x: (-x[1]["Pts"], -x[1]["Diff"], -x[1]["+L"]))
     return result
  
-# --- Gruppenspiele erstellen (Round Robin je Gruppe, mit Board-Zuteilung) ---
+# --- Gruppenspiele erstellen ---
 def t_erstelle_gruppenspiele(gruppen, boards):
     spiele = []
     board_counter = 0
-    # Alle Gruppen-Paarungen sammeln und nach Board interleaven
     alle_paarungen = []
     for gk in sorted(gruppen.keys()):
         m = gruppen[gk]
         paarungen = [(m[i], m[j], gk) for i in range(len(m)) for j in range(i+1, len(m))]
         alle_paarungen.append(paarungen)
-    # Interleave: erst je eine Paarung aus jeder Gruppe
     max_p = max(len(p) for p in alle_paarungen) if alle_paarungen else 0
     for round_idx in range(max_p):
         for gp in alle_paarungen:
@@ -532,33 +604,29 @@ def t_erstelle_gruppenspiele(gruppen, boards):
                     "board": (board_counter % boards) + 1,
                     "legs_a": None,
                     "legs_b": None,
+                    "avg_a": None,
+                    "avg_b": None,
                     "abgeschlossen": False
                 })
                 board_counter += 1
     return spiele
  
-# --- Qualifizierte bestimmen (Top 2 pro Gruppe = 16 für KO) ---
+# --- Qualifizierte bestimmen ---
 def t_get_qualifizierte(gruppen, gruppen_spiele):
     positionen = {}
     for gk in sorted(gruppen.keys()):
         tab = t_berechne_tabelle(gk, gruppen[gk], gruppen_spiele)
         positionen[gk] = [name for name, _ in tab]
-    # Seeding: 1A, 1B, ..., 1H, 2A, 2B, ..., 2H
     qual = []
     for pos in range(2):
         for gk in sorted(gruppen.keys()):
             if pos < len(positionen[gk]):
                 qual.append(positionen[gk][pos])
-    return qual  # 16 Qualifizierte
+    return qual
  
-# --- KO-Bracket erstellen (16 Teams, 4 Runden) ---
-# runde_idx=0: Achtelfinale (8 Spiele)
-# runde_idx=1: Viertelfinale (4 Spiele)
-# runde_idx=2: Halbfinale (2 Spiele)
-# runde_idx=3: Finale (1 Spiel)
+# --- KO-Bracket erstellen ---
 def t_erstelle_ko_spiele(qualifizierte, boards):
     namen = {0: "Achtelfinale", 1: "Viertelfinale", 2: "Halbfinale", 3: "Finale"}
-    n = len(qualifizierte)  # 16
     bracket_size = 16
     ko = []
     mid = 0
@@ -569,10 +637,10 @@ def t_erstelle_ko_spiele(qualifizierte, boards):
                 "id": mid, "runde_idx": r, "runde_name": namen[r], "match_nr": m,
                 "spieler_a": None, "spieler_b": None, "board": None,
                 "legs_a": None, "legs_b": None,
+                "avg_a": None, "avg_b": None,
                 "abgeschlossen": False, "sieger": None
             })
             mid += 1
-    # Erste Runde (Achtelfinale) befüllen mit Snake-Seeding
     erste = sorted([s for s in ko if s["runde_idx"] == 0], key=lambda x: x["match_nr"])
     seeded = qualifizierte[:16]
     bc = 0
@@ -584,7 +652,6 @@ def t_erstelle_ko_spiele(qualifizierte, boards):
     return ko
  
 def t_propagiere_sieger(ko_spiele, boards):
-    """Sieger von Runde r → Runde r+1"""
     max_r = max(s["runde_idx"] for s in ko_spiele)
     bc = sum(1 for s in ko_spiele if s.get("board") is not None)
     for r in range(0, max_r):
@@ -606,7 +673,7 @@ def t_propagiere_sieger(ko_spiele, boards):
                         bc += 1
     return ko_spiele
  
-# --- Bracket HTML ---
+# --- Bracket HTML (inkl. Avg) ---
 def t_bracket_html(ko_spiele):
     if not ko_spiele:
         return ""
@@ -617,16 +684,18 @@ def t_bracket_html(ko_spiele):
  
     css = """<style>
 .brk{display:flex;overflow-x:auto;padding:16px;background:#0a1020;border-radius:12px;}
-.brk-col{display:flex;flex-direction:column;align-items:stretch;min-width:175px;margin-right:8px;}
+.brk-col{display:flex;flex-direction:column;align-items:stretch;min-width:185px;margin-right:8px;}
 .brk-head{font-size:11px;color:#6b7fa3;text-transform:uppercase;letter-spacing:1px;
     text-align:center;padding:4px 8px;background:#1a2540;border-radius:3px;margin-bottom:8px;white-space:nowrap;}
 .brk-matches{display:flex;flex-direction:column;justify-content:space-around;flex:1;}
 .brk-match{display:flex;flex-direction:column;gap:2px;margin-bottom:4px;}
 .brk-board{font-size:10px;color:#4a5568;text-align:center;margin-bottom:1px;}
 .brk-p{padding:5px 10px;background:#1e2d45;border-radius:4px;font-size:12px;color:#9bacc8;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:165px;}
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:175px;}
 .brk-p.win{color:#22c55e;font-weight:700;background:#0f2a1a;}
 .brk-p.tbd{color:#374151;font-style:italic;}
+.brk-avg{font-size:10px;color:#6b9c6b;margin-left:4px;}
+.brk-p.win .brk-avg{color:#86efac;}
 </style>"""
  
     def p_cls(name, is_win):
@@ -648,10 +717,14 @@ def t_bracket_html(ko_spiele):
             pb = sp.get("spieler_b") or "TBD"
             la_str = f" ({la})" if done and la is not None else ""
             lb_str = f" ({lb})" if done and lb is not None else ""
+            avg_a_val = sp.get("avg_a")
+            avg_b_val = sp.get("avg_b")
+            avg_a_str = f"<span class='brk-avg'>· {float(avg_a_val):.1f}</span>" if done and avg_a_val is not None else ""
+            avg_b_str = f"<span class='brk-avg'>· {float(avg_b_val):.1f}</span>" if done and avg_b_val is not None else ""
             board_h = f"<div class='brk-board'>Board {sp['board']}</div>" if sp.get("board") else "<div class='brk-board'>&nbsp;</div>"
             html += (f"<div class='brk-match'>{board_h}"
-                     f"<div class='brk-p {p_cls(pa, win_a)}'>{pa}{la_str}</div>"
-                     f"<div class='brk-p {p_cls(pb, win_b)}'>{pb}{lb_str}</div></div>")
+                     f"<div class='brk-p {p_cls(pa, win_a)}'>{pa}{la_str}{avg_a_str}</div>"
+                     f"<div class='brk-p {p_cls(pb, win_b)}'>{pb}{lb_str}{avg_b_str}</div></div>")
         html += "</div></div>"
     html += "</div>"
     return html
@@ -661,11 +734,10 @@ def _t_setup_ui():
     st.markdown("""
     <div style='text-align:center;padding:24px 0 10px 0;'>
         <div style='font-size:44px;'>🏆</div>
-        <div style='font-size:20px;font-weight:700;color:#fff;margin-top:8px;'>Neues Turnier erstellen</div>
-        <div style='font-size:13px;color:#6b7fa3;margin-top:4px;'>32 Teilnehmer · 8 Gruppen · 16er KO</div>
+        <div style='font-size:20px;font-weight:700;color:#1a202c;margin-top:8px;'>Neues Turnier erstellen</div>
+        <div style='font-size:13px;color:#64748b;margin-top:4px;'>32 Teilnehmer · 8 Gruppen · 16er KO</div>
     </div>
     """, unsafe_allow_html=True)
- 
     with st.form("neues_turnier_form"):
         name = st.text_input("Turniername", placeholder="z.B. Vereinsmeisterschaft 2026")
         submitted = st.form_submit_button("🏆 Turnier erstellen", type="primary")
@@ -673,7 +745,6 @@ def _t_setup_ui():
             if not name.strip():
                 st.error("Bitte einen Turniernamen eingeben.")
             else:
-                # Leere Gruppen vorbelegen
                 gruppen = {g: [] for g in TURNIER_GRUPPEN}
                 speichere_turnier({
                     "name": name.strip(), "status": "gruppen_setup",
@@ -683,12 +754,11 @@ def _t_setup_ui():
                 })
                 st.rerun()
  
-# --- Gruppen-Setup UI (manuell befüllen) ---
+# --- Gruppen-Setup UI ---
 def _t_gruppen_setup_ui(turnier):
     pw = st.text_input("Admin-Passwort", type="password", key="t_setup_pw")
     if pw != PASSWORT:
         st.info("Passwort eingeben um Gruppen zu bearbeiten.")
-        # Nur Anzeige
         gruppen = turnier.get("gruppen", {})
         cols = st.columns(4)
         for i, gk in enumerate(TURNIER_GRUPPEN):
@@ -726,16 +796,13 @@ def _t_gruppen_setup_ui(turnier):
  
     st.markdown("---")
     col1, col2 = st.columns([2, 1])
- 
     with col1:
         if st.button("💾 Gruppen speichern"):
             speichere_turnier({**turnier, "gruppen": neue_gruppen})
             st.success("Gespeichert!")
             st.rerun()
  
-    # Prüfen ob alle Gruppen voll sind
     alle_voll = all(len(neue_gruppen.get(g, [])) == TURNIER_PRO_GRUPPE for g in TURNIER_GRUPPEN)
-    # Doppelte prüfen
     alle_names = [n for g in TURNIER_GRUPPEN for n in neue_gruppen.get(g, [])]
     duplikate = len(alle_names) != len(set(alle_names))
  
@@ -762,7 +829,7 @@ def _t_gruppenphase_ui(turnier):
     gs = turnier.get("gruppen_spiele", [])
     ko = turnier.get("ko_spiele", [])
  
-    # Turnierbaum immer sichtbar oben
+    # Turnierbaum immer sichtbar oben (bleibt dunkel)
     if ko:
         st.markdown("---")
         st.markdown("#### 🌳 Turnierbaum")
@@ -781,7 +848,6 @@ def _t_gruppenphase_ui(turnier):
             """, unsafe_allow_html=True)
         st.markdown("---")
  
-    # Tabs: Spielplan | Gruppentabellen | KO-Phase
     tab_labels = ["📅 Spielplan", "📊 Gruppentabellen"]
     if ko:
         tab_labels.append("🏆 KO-Phase")
@@ -789,13 +855,25 @@ def _t_gruppenphase_ui(turnier):
  
     # ── SPIELPLAN ──
     with tabs[0]:
+        # Zeiteinstellungen
+        col_t1, col_t2 = st.columns([1, 1])
+        with col_t1:
+            t_start_val = st.text_input("⏰ Startzeit", 
+                                        value=st.session_state.get("t_startzeit", "18:00"),
+                                        key="t_sp_startzeit_inp", max_chars=5)
+            st.session_state["t_startzeit"] = t_start_val
+        with col_t2:
+            t_dauer_val = st.number_input("⏱ Min/Spiel", min_value=5, max_value=60,
+                                          value=15, key="t_sp_dauer_inp", step=5)
+ 
+        spielzeiten = berechne_gruppen_zeiten(gs, t_start_val, t_dauer_val, TURNIER_BOARDS)
+ 
         pw = st.text_input("Passwort zum Eintragen", type="password", key="t_sp_pw")
         admin_mode = (pw == PASSWORT)
  
         done_g = sum(1 for s in gs if s.get("abgeschlossen"))
         st.caption(f"{done_g}/{len(gs)} Gruppenspiele abgeschlossen")
  
-        # Board-Filter
         board_filter = st.radio("Anzeigen:", ["Alle"] + [f"Board {b}" for b in range(1, TURNIER_BOARDS+1)],
                                 horizontal=True, key="t_board_filter")
  
@@ -809,18 +887,29 @@ def _t_gruppenphase_ui(turnier):
             a, b = sp["spieler_a"], sp["spieler_b"]
             gk = sp.get("gruppe", "?")
             ist_fertig = sp.get("abgeschlossen", False)
-            board_label = f"<span style='background:#2a3555;border-radius:3px;padding:1px 6px;font-size:11px;color:#6b7fa3;'>Gr.{gk} · B{sp['board']}</span>"
+            zeit_str = spielzeiten.get(sid, "?")
+            zeit_badge = (f"<span style='background:#3b82f6;color:#fff;border-radius:3px;"
+                          f"padding:1px 7px;font-size:11px;font-weight:600;'>"
+                          f"B{sp['board']} ~{zeit_str}</span>")
+            gr_badge = (f"<span style='background:#e2e8f0;color:#475569;border-radius:3px;"
+                        f"padding:1px 5px;font-size:11px;'>Gr.{gk}</span>")
  
             if ist_fertig:
                 la = sp.get("legs_a", 0); lb = sp.get("legs_b", 0)
-                sieger = a if la > lb else (b if lb > la else "–")
+                avga = sp.get("avg_a") or 0.0; avgb = sp.get("avg_b") or 0.0
                 cols = st.columns([8, 1] if admin_mode else [10])
                 with cols[0]:
+                    win_a_style = "color:#16a34a;font-weight:700;" if la > lb else ""
+                    win_b_style = "color:#16a34a;font-weight:700;" if lb > la else ""
                     st.markdown(
-                        f"{board_label} &nbsp; ✅ "
-                        f"<span style='{'color:#22c55e;font-weight:700;' if la > lb else ''}'>{a}</span>"
+                        f"<div style='background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;"
+                        f"padding:8px 12px;margin-bottom:4px;font-size:14px;'>"
+                        f"{zeit_badge} {gr_badge} &nbsp; ✅ "
+                        f"<span style='{win_a_style}'>{a}</span>"
                         f" <b>{int(la)}:{int(lb)}</b> "
-                        f"<span style='{'color:#22c55e;font-weight:700;' if lb > la else ''}'>{b}</span>",
+                        f"<span style='{win_b_style}'>{b}</span>"
+                        f" &nbsp; <span style='color:#64748b;font-size:12px;'>"
+                        f"Avg {float(avga):.1f} / {float(avgb):.1f}</span></div>",
                         unsafe_allow_html=True)
                 if admin_mode and len(cols) > 1:
                     with cols[1]:
@@ -828,18 +917,30 @@ def _t_gruppenphase_ui(turnier):
                             aktion = ("unlock", sid)
             else:
                 if admin_mode:
-                    c = st.columns([4, 1, 1, 1])
+                    c = st.columns([3, 1, 1, 1, 1, 1])
                     with c[0]:
-                        st.markdown(f"{board_label} &nbsp; **{a}** vs **{b}**", unsafe_allow_html=True)
+                        st.markdown(f"{zeit_badge} {gr_badge} &nbsp; **{a}** vs **{b}**", unsafe_allow_html=True)
                     with c[1]:
-                        la = st.number_input("", 0, step=1, value=0, key=f"t_la_{sid}", label_visibility="collapsed")
+                        la = st.number_input("L-A", 0, step=1, value=0, key=f"t_la_{sid}", label_visibility="collapsed")
                     with c[2]:
-                        lb = st.number_input("", 0, step=1, value=0, key=f"t_lb_{sid}", label_visibility="collapsed")
+                        lb = st.number_input("L-B", 0, step=1, value=0, key=f"t_lb_{sid}", label_visibility="collapsed")
                     with c[3]:
+                        avg_a_v = st.number_input("Ø-A", 0.0, step=0.1,
+                                                   value=float(sp.get("avg_a") or 50.0),
+                                                   key=f"t_avga_{sid}", label_visibility="collapsed")
+                    with c[4]:
+                        avg_b_v = st.number_input("Ø-B", 0.0, step=0.1,
+                                                   value=float(sp.get("avg_b") or 50.0),
+                                                   key=f"t_avgb_{sid}", label_visibility="collapsed")
+                    with c[5]:
                         if st.button("✅", key=f"t_lock_{sid}"):
-                            aktion = ("lock", sid, la, lb)
+                            aktion = ("lock", sid, la, lb, avg_a_v, avg_b_v)
                 else:
-                    st.markdown(f"{board_label} &nbsp; ⏳ **{a}** vs **{b}**", unsafe_allow_html=True)
+                    st.markdown(
+                        f"<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;"
+                        f"padding:8px 12px;margin-bottom:4px;font-size:14px;color:#374151;'>"
+                        f"{zeit_badge} {gr_badge} &nbsp; ⏳ <b>{a}</b> vs <b>{b}</b></div>",
+                        unsafe_allow_html=True)
  
         if aktion and admin_mode:
             neue_gs = []
@@ -848,6 +949,7 @@ def _t_gruppenphase_ui(turnier):
                 if sp["id"] == aktion[1]:
                     if aktion[0] == "lock":
                         sp["legs_a"] = aktion[2]; sp["legs_b"] = aktion[3]
+                        sp["avg_a"] = aktion[4]; sp["avg_b"] = aktion[5]
                         sp["abgeschlossen"] = True
                     elif aktion[0] == "unlock":
                         sp["abgeschlossen"] = False
@@ -872,43 +974,62 @@ def _t_gruppenphase_ui(turnier):
  
     # ── GRUPPENTABELLEN ──
     with tabs[1]:
-        cols = st.columns(4)
-        for i, gk in enumerate(TURNIER_GRUPPEN):
-            mitglieder = gruppen.get(gk, [])
-            tab = t_berechne_tabelle(gk, mitglieder, gs)
-            with cols[i % 4]:
-                st.markdown(f"**Gruppe {gk}**")
-                rows = ""
-                for pos, (name, s) in enumerate(tab):
-                    bg = "background:#0a1f12;" if pos < 2 else ""
-                    badge = "🟢" if pos < 2 else "🔴"
-                    diff_col = "#22c55e" if s["Diff"] > 0 else "#ef4444" if s["Diff"] < 0 else "#9bacc8"
-                    rows += (f"<tr style='{bg}border-bottom:1px solid #1e2d45;'>"
-                             f"<td style='padding:5px 6px;font-size:12px;'>{badge}</td>"
-                             f"<td style='padding:5px 6px;font-size:13px;font-weight:600;'>{name}</td>"
-                             f"<td style='padding:5px 4px;text-align:center;font-size:12px;color:#6b7fa3;'>{s['Sp']}</td>"
-                             f"<td style='padding:5px 4px;text-align:center;font-size:12px;color:#22c55e;'>{s['S']}</td>"
-                             f"<td style='padding:5px 4px;text-align:center;font-size:12px;color:#ef4444;'>{s['N']}</td>"
-                             f"<td style='padding:5px 4px;text-align:center;font-size:12px;color:{diff_col};'>{s['Diff']:+d}</td>"
-                             f"<td style='padding:5px 6px;text-align:center;font-size:13px;font-weight:900;color:#fff;'>{s['Pts']}</td>"
-                             f"</tr>")
-                header = ("<tr style='border-bottom:2px solid #2a3555;'>"
-                          "<th></th>"
-                          "<th style='font-size:10px;color:#6b7fa3;text-align:left;padding:3px 6px;'>Spieler</th>"
-                          "<th style='font-size:10px;color:#6b7fa3;'>Sp</th>"
-                          "<th style='font-size:10px;color:#6b7fa3;'>S</th>"
-                          "<th style='font-size:10px;color:#6b7fa3;'>N</th>"
-                          "<th style='font-size:10px;color:#6b7fa3;'>+/-</th>"
-                          "<th style='font-size:10px;color:#6b7fa3;'>Pts</th>"
-                          "</tr>")
-                st.markdown(
-                    f"<table style='width:100%;border-collapse:collapse;background:#111827;border-radius:6px;overflow:hidden;margin-bottom:16px;'>"
-                    f"<thead>{header}</thead><tbody>{rows}</tbody></table>",
-                    unsafe_allow_html=True)
+        # 2-Spalten-Layout: je 2 Gruppen nebeneinander
+        pairs = [("A", "B"), ("C", "D"), ("E", "F"), ("G", "H")]
+        for pair in pairs:
+            cols = st.columns(2)
+            for ci, gk in enumerate(pair):
+                mitglieder = gruppen.get(gk, [])
+                tab = t_berechne_tabelle(gk, mitglieder, gs)
+                with cols[ci]:
+                    st.markdown(f"**Gruppe {gk}**")
+                    header = (
+                        "<tr style='border-bottom:2px solid #e2e8f0;background:#f8fafc;'>"
+                        "<th style='padding:4px 6px;'></th>"
+                        "<th style='font-size:10px;color:#64748b;text-align:left;padding:4px 8px;font-weight:600;'>Spieler</th>"
+                        "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 3px;font-weight:600;'>Sp</th>"
+                        "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 3px;font-weight:600;'>S</th>"
+                        "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 3px;font-weight:600;'>N</th>"
+                        "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 3px;font-weight:600;'>+/-</th>"
+                        "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 3px;font-weight:600;'>Avg</th>"
+                        "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 6px;font-weight:600;'>Pts</th>"
+                        "</tr>"
+                    )
+                    rows = ""
+                    for pos, (name, s) in enumerate(tab):
+                        bg = "background:#f0fdf4;" if pos < 2 else "background:#ffffff;"
+                        badge = "🟢" if pos < 2 else "🔴"
+                        diff_col = "#16a34a" if s["Diff"] > 0 else "#dc2626" if s["Diff"] < 0 else "#6b7280"
+                        avg_str = f"{s.get('Avg', 0.0):.1f}" if s["Sp"] > 0 else "–"
+                        rows += (
+                            f"<tr style='{bg}border-bottom:1px solid #e2e8f0;'>"
+                            f"<td style='padding:5px 6px;font-size:12px;'>{badge}</td>"
+                            f"<td style='padding:5px 8px;font-size:13px;font-weight:600;color:#1a202c;white-space:nowrap;'>{name}</td>"
+                            f"<td style='padding:5px 3px;text-align:center;font-size:12px;color:#64748b;'>{s['Sp']}</td>"
+                            f"<td style='padding:5px 3px;text-align:center;font-size:12px;color:#16a34a;font-weight:700;'>{s['S']}</td>"
+                            f"<td style='padding:5px 3px;text-align:center;font-size:12px;color:#dc2626;font-weight:700;'>{s['N']}</td>"
+                            f"<td style='padding:5px 3px;text-align:center;font-size:12px;color:{diff_col};font-weight:600;'>{s['Diff']:+d}</td>"
+                            f"<td style='padding:5px 3px;text-align:center;font-size:12px;color:#6b7280;'>{avg_str}</td>"
+                            f"<td style='padding:5px 6px;text-align:center;font-size:13px;font-weight:900;color:#1a202c;'>{s['Pts']}</td>"
+                            f"</tr>"
+                        )
+                    st.markdown(
+                        f"<table style='width:100%;border-collapse:collapse;background:#fff;"
+                        f"border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:28px;'>"
+                        f"<thead>{header}</thead><tbody>{rows}</tbody></table>",
+                        unsafe_allow_html=True)
+            st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
  
     # ── KO-PHASE ──
     if ko and len(tabs) > 2:
         with tabs[2]:
+            # KO-Startzeit
+            ko_start_val = st.text_input("⏰ KO-Phase Startzeit",
+                                          value=st.session_state.get("t_ko_startzeit", "20:00"),
+                                          key="t_ko_startzeit_inp", max_chars=5)
+            st.session_state["t_ko_startzeit"] = ko_start_val
+            ko_zeiten = berechne_ko_zeiten(ko, ko_start_val, TURNIER_BOARDS)
+ 
             pw_ko = st.text_input("Passwort zum Eintragen", type="password", key="t_ko_pw")
             admin_ko = (pw_ko == PASSWORT)
             if admin_ko:
@@ -920,6 +1041,16 @@ def _t_gruppenphase_ui(turnier):
             for r in range(0, max_r + 1):
                 runde_spiele = sorted([s for s in ko if s["runde_idx"] == r], key=lambda x: x["match_nr"])
                 rname = runde_spiele[0]["runde_name"] if runde_spiele else ""
+                dauer_runde = DAUER_KO.get(rname, 15)
+                runde_zeit = ko_zeiten.get(runde_spiele[0]["id"], "?") if runde_spiele else "?"
+                st.markdown(
+                    f"<div style='display:flex;align-items:center;gap:12px;margin:16px 0 8px 0;'>"
+                    f"<span style='font-size:17px;font-weight:800;color:#1a202c;'>### {rname}</span>"
+                    f"<span style='background:#3b82f6;color:#fff;border-radius:4px;padding:2px 8px;"
+                    f"font-size:11px;font-weight:600;'>~{runde_zeit}</span>"
+                    f"<span style='color:#64748b;font-size:11px;'>{dauer_runde} min/Spiel</span>"
+                    f"</div>",
+                    unsafe_allow_html=True)
                 st.markdown(f"### {rname}")
  
                 for sp in runde_spiele:
@@ -928,19 +1059,28 @@ def _t_gruppenphase_ui(turnier):
                     b = sp.get("spieler_b") or "TBD"
                     board_str = f"Board {sp['board']}" if sp.get("board") else "–"
                     ist_fertig = sp.get("abgeschlossen", False)
+                    sp_zeit = ko_zeiten.get(sid, "?")
+                    zeit_badge = (f"<span style='background:#3b82f6;color:#fff;border-radius:3px;"
+                                  f"padding:1px 7px;font-size:11px;font-weight:600;'>~{sp_zeit}</span>")
  
                     if ist_fertig:
                         la = sp.get("legs_a", 0); lb = sp.get("legs_b", 0)
                         sieger = sp.get("sieger", "?")
+                        avga = sp.get("avg_a") or 0.0; avgb = sp.get("avg_b") or 0.0
                         cols = st.columns([8, 1] if admin_ko else [10])
                         with cols[0]:
+                            win_a_s = "color:#16a34a;font-weight:700;" if la > lb else ""
+                            win_b_s = "color:#16a34a;font-weight:700;" if lb > la else ""
                             st.markdown(
-                                f"<div style='background:#1a2a1a;border-radius:6px;padding:8px 12px;margin-bottom:4px;'>"
-                                f"<span style='font-size:11px;color:#6b7fa3;'>{board_str}</span> &nbsp; "
-                                f"✅ <span style='{'color:#22c55e;font-weight:700;' if la > lb else ''}'>{a}</span>"
+                                f"<div style='background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;"
+                                f"padding:8px 12px;margin-bottom:4px;'>"
+                                f"{zeit_badge} <span style='color:#64748b;font-size:11px;'>{board_str}</span> &nbsp; "
+                                f"✅ <span style='{win_a_s}'>{a}</span>"
                                 f" <b>{int(la)}:{int(lb)}</b> "
-                                f"<span style='{'color:#22c55e;font-weight:700;' if lb > la else ''}'>{b}</span>"
-                                f" &nbsp; <span style='color:#22c55e;font-size:12px;'>→ {sieger}</span></div>",
+                                f"<span style='{win_b_s}'>{b}</span>"
+                                f" &nbsp; <span style='color:#16a34a;font-size:12px;'>→ {sieger}</span>"
+                                f" &nbsp; <span style='color:#64748b;font-size:12px;'>"
+                                f"Avg {float(avga):.1f}/{float(avgb):.1f}</span></div>",
                                 unsafe_allow_html=True)
                         if admin_ko and len(cols) > 1:
                             with cols[1]:
@@ -948,24 +1088,35 @@ def _t_gruppenphase_ui(turnier):
                                     aktion_ko = ("unlock", sid)
                     elif a == "TBD" or b == "TBD":
                         st.markdown(
-                            f"<div style='background:#111827;border-radius:6px;padding:8px 12px;margin-bottom:4px;color:#4b5563;'>"
-                            f"⏸ TBD vs TBD · {board_str}</div>", unsafe_allow_html=True)
+                            f"<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;"
+                            f"padding:8px 12px;margin-bottom:4px;color:#9ca3af;'>"
+                            f"{zeit_badge} ⏸ TBD vs TBD · {board_str}</div>", unsafe_allow_html=True)
                     else:
                         if admin_ko:
-                            c = st.columns([4, 1, 1, 1])
+                            c = st.columns([3, 1, 1, 1, 1, 1])
                             with c[0]:
-                                st.markdown(f"<span style='font-size:11px;color:#6b7fa3;'>{board_str}</span> &nbsp; **{a}** vs **{b}**", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"{zeit_badge} <span style='color:#64748b;font-size:11px;'>{board_str}</span>"
+                                    f" &nbsp; **{a}** vs **{b}**", unsafe_allow_html=True)
                             with c[1]:
-                                la = st.number_input("", 0, step=1, value=0, key=f"ko_la_{sid}", label_visibility="collapsed")
+                                la = st.number_input("L-A", 0, step=1, value=0, key=f"ko_la_{sid}", label_visibility="collapsed")
                             with c[2]:
-                                lb = st.number_input("", 0, step=1, value=0, key=f"ko_lb_{sid}", label_visibility="collapsed")
+                                lb = st.number_input("L-B", 0, step=1, value=0, key=f"ko_lb_{sid}", label_visibility="collapsed")
                             with c[3]:
+                                avg_a_v = st.number_input("Ø-A", 0.0, step=0.1, value=float(sp.get("avg_a") or 50.0),
+                                                           key=f"ko_avga_{sid}", label_visibility="collapsed")
+                            with c[4]:
+                                avg_b_v = st.number_input("Ø-B", 0.0, step=0.1, value=float(sp.get("avg_b") or 50.0),
+                                                           key=f"ko_avgb_{sid}", label_visibility="collapsed")
+                            with c[5]:
                                 if st.button("✅", key=f"ko_lock_{sid}"):
-                                    aktion_ko = ("lock", sid, la, lb)
+                                    aktion_ko = ("lock", sid, la, lb, avg_a_v, avg_b_v)
                         else:
                             st.markdown(
-                                f"<div style='background:#111827;border-radius:6px;padding:8px 12px;margin-bottom:4px;'>"
-                                f"⏳ <b>{a}</b> vs <b>{b}</b> · <span style='color:#6b7fa3;font-size:12px;'>{board_str}</span></div>",
+                                f"<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;"
+                                f"padding:8px 12px;margin-bottom:4px;color:#374151;'>"
+                                f"{zeit_badge} ⏳ <b>{a}</b> vs <b>{b}</b> · "
+                                f"<span style='color:#64748b;font-size:12px;'>{board_str}</span></div>",
                                 unsafe_allow_html=True)
  
                 st.markdown("---")
@@ -978,6 +1129,7 @@ def _t_gruppenphase_ui(turnier):
                         if aktion_ko[0] == "lock":
                             la_v, lb_v = aktion_ko[2], aktion_ko[3]
                             sp["legs_a"] = la_v; sp["legs_b"] = lb_v
+                            sp["avg_a"] = aktion_ko[4]; sp["avg_b"] = aktion_ko[5]
                             sp["abgeschlossen"] = True
                             sp["sieger"] = sp["spieler_a"] if la_v > lb_v else sp["spieler_b"]
                         elif aktion_ko[0] == "unlock":
@@ -1019,17 +1171,17 @@ def turnier_main():
     status_map = {
         "gruppen_setup": ("✏️ Gruppen-Setup", "#f59e0b"),
         "gruppen": ("⚽ Gruppenphase", "#3b82f6"),
-        "ko": ("🏆 KO-Phase", "#22c55e"),
-        "abgeschlossen": ("✅ Abgeschlossen", "#22c55e")
+        "ko": ("🏆 KO-Phase", "#16a34a"),
+        "abgeschlossen": ("✅ Abgeschlossen", "#16a34a")
     }
-    slabel, scolor = status_map.get(status, ("⚙️ Setup", "#6b7fa3"))
+    slabel, scolor = status_map.get(status, ("⚙️ Setup", "#64748b"))
  
     st.markdown(f"""
-    <div style='background:#1a2540;padding:12px 18px;border-radius:10px;margin-bottom:20px;
+    <div style='background:#f8fafc;border:1px solid #e2e8f0;padding:12px 18px;border-radius:10px;margin-bottom:20px;
         display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;'>
         <div>
-            <div style='font-size:22px;font-weight:800;color:#fff;'>{name}</div>
-            <div style='font-size:12px;color:#6b7fa3;margin-top:2px;'>32 Teilnehmer · 8 Gruppen · 16er KO · {TURNIER_BOARDS} Boards</div>
+            <div style='font-size:22px;font-weight:800;color:#1a202c;'>{name}</div>
+            <div style='font-size:12px;color:#64748b;margin-top:2px;'>32 Teilnehmer · 8 Gruppen · 16er KO · {TURNIER_BOARDS} Boards</div>
         </div>
         <div style='background:{scolor}22;color:{scolor};padding:4px 12px;border-radius:20px;
             font-size:13px;font-weight:700;border:1px solid {scolor}55;'>{slabel}</div>
@@ -1078,6 +1230,14 @@ if "ausgewaehlter_spieler" not in st.session_state:
     st.session_state.ausgewaehlter_spieler = None
 if "spiel_submitted" not in st.session_state:
     st.session_state.spiel_submitted = False
+if "t_startzeit" not in st.session_state:
+    st.session_state.t_startzeit = "18:00"
+if "t_ko_startzeit" not in st.session_state:
+    st.session_state.t_ko_startzeit = "20:00"
+if "aus_startzeit" not in st.session_state:
+    st.session_state.aus_startzeit = "18:00"
+if "aus_dauer_min" not in st.session_state:
+    st.session_state.aus_dauer_min = 15
  
 col1, col2 = st.columns([1, 5])
 with col1:
@@ -1480,6 +1640,22 @@ elif "Auslosung 🎲" in menu:
         if extra_spieler:
             st.info(f"⚠️ Ungerade Spieleranzahl: **{extra_spieler}** hat einen Gegner mehr.")
  
+        # Zeiteinstellungen für Auslosung
+        col_z1, col_z2 = st.columns([1, 1])
+        with col_z1:
+            aus_start = st.text_input("⏰ Startzeit",
+                                       value=st.session_state.get("aus_startzeit", "18:00"),
+                                       key="aus_startzeit_inp", max_chars=5)
+            st.session_state["aus_startzeit"] = aus_start
+        with col_z2:
+            aus_dauer = st.number_input("⏱ Min/Spiel", min_value=5, max_value=60,
+                                         value=int(st.session_state.get("aus_dauer_min", 15)),
+                                         key="aus_dauer_inp", step=5)
+            st.session_state["aus_dauer_min"] = aus_dauer
+ 
+        # Zeiten berechnen: orig_idx → (time_str, board_nr)
+        spielzeiten = berechne_spielplan_zeiten(reihenfolge, locked, aus_start, aus_dauer)
+ 
         pw = st.text_input("Passwort zum Eintragen", type="password", key="pw_spielplan")
         if pw == PASSWORT:
             st.caption("🔒 sperrt ein Ergebnis · 🔓 entsperrt · 🗑 entfernt")
@@ -1498,12 +1674,22 @@ elif "Auslosung 🎲" in menu:
                 a, b = spiel[0], spiel[1]
                 vorher = ergebnisse.get(orig_idx, {})
                 ist_gesperrt = orig_idx in locked
+                zeit_str, board_nr = spielzeiten.get(orig_idx, ("?", "?"))
+                zeit_badge = (f"<span style='background:#3b82f6;color:#fff;border-radius:4px;"
+                              f"padding:1px 7px;font-size:11px;font-weight:600;'>"
+                              f"B{board_nr} ~{zeit_str}</span>")
+ 
                 if ist_gesperrt:
                     la = vorher.get("legs_a", 0); lb = vorher.get("legs_b", 0)
                     avga = vorher.get("avg_a", 50.0); avgb = vorher.get("avg_b", 50.0)
                     cols = st.columns([6, 1, 1])
                     with cols[0]:
-                        st.markdown(f"<div style='background:#2a2a2a;border-radius:6px;padding:8px 10px;color:#888;font-size:14px;'>✅ <b>{a}</b> {int(la)}:{int(lb)} <b>{b}</b> &nbsp;·&nbsp; Avg {avga:.1f} / {avgb:.1f}</div>", unsafe_allow_html=True)
+                        st.markdown(
+                            f"<div style='background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;"
+                            f"padding:8px 10px;font-size:14px;'>"
+                            f"{zeit_badge} ✅ <b>{a}</b> {int(la)}:{int(lb)} <b>{b}</b>"
+                            f" &nbsp;·&nbsp; Avg {float(avga):.1f} / {float(avgb):.1f}</div>",
+                            unsafe_allow_html=True)
                     with cols[1]:
                         if st.button("🔓", key=f"unlock_{orig_idx}"): aktion = ("unlock", orig_idx)
                     with cols[2]:
@@ -1511,7 +1697,7 @@ elif "Auslosung 🎲" in menu:
                     ergebnisse_temp[orig_idx] = {"legs_a": la, "legs_b": lb, "avg_a": avga, "avg_b": avgb}
                 else:
                     cols = st.columns([3, 3, 2, 2, 2, 2, 1, 1])
-                    with cols[0]: st.markdown(f"**{a}**")
+                    with cols[0]: st.markdown(f"{zeit_badge} **{a}**", unsafe_allow_html=True)
                     with cols[1]: st.markdown(f"**{b}**")
                     with cols[2]:
                         la = st.number_input("", min_value=0, step=1, value=vorher.get("legs_a", 0), key=f"la_{orig_idx}", label_visibility="collapsed")
@@ -1570,6 +1756,7 @@ elif "Auslosung 🎲" in menu:
                     loesche_spielplan_db()
                     st.rerun()
         else:
+            # Öffentliche Ansicht mit Zeitbadges
             st.info(f"📋 Aktiver Spielplan für **Spieltag {spieltag_nr}** — Passwort eingeben zum Bearbeiten.")
             st.markdown("---")
             for orig_idx in reihenfolge:
@@ -1578,12 +1765,16 @@ elif "Auslosung 🎲" in menu:
                 vorher = ergebnisse.get(orig_idx, {})
                 ist_gesperrt = orig_idx in locked
                 la = vorher.get("legs_a", 0); lb = vorher.get("legs_b", 0)
+                zeit_str, board_nr = spielzeiten.get(orig_idx, ("?", "?"))
+                badge = (f"<span style='background:#3b82f6;color:#fff;border-radius:4px;"
+                         f"padding:1px 7px;font-size:11px;font-weight:600;'>"
+                         f"B{board_nr} ~{zeit_str}</span>")
                 if ist_gesperrt:
-                    st.markdown(f"✅ ~~{a}~~ vs ~~{b}~~ &nbsp; → **{int(la)}:{int(lb)}**", unsafe_allow_html=True)
+                    st.markdown(f"{badge} ✅ ~~{a}~~ vs ~~{b}~~ &nbsp; → **{int(la)}:{int(lb)}**", unsafe_allow_html=True)
                 elif la > 0 or lb > 0:
-                    st.markdown(f"⏳ **{a}** vs **{b}** &nbsp; → {int(la)}:{int(lb)} *(nicht gesperrt)*")
+                    st.markdown(f"{badge} ⏳ **{a}** vs **{b}** &nbsp; → {int(la)}:{int(lb)} *(nicht gesperrt)*", unsafe_allow_html=True)
                 else:
-                    st.markdown(f"⏳ **{a}** vs **{b}**")
+                    st.markdown(f"{badge} ⏳ **{a}** vs **{b}**", unsafe_allow_html=True)
             if st.button("🔄 Aktualisieren"): st.rerun()
  
 # ---------------------
