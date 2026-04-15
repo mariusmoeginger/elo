@@ -500,7 +500,7 @@ def t_berechne_tabelle(gruppe_key, mitglieder, gruppen_spiele):
         s["Diff"] = s["+L"] - s["-L"]
         s["Avg"] = round(s["AvgSum"] / s["Sp"], 1) if s["Sp"] > 0 else 0.0
         result.append((t, s))
-    result.sort(key=lambda x: (-x[1]["Pts"], -x[1]["Diff"], -x[1]["+L"]))
+    result.sort(key=lambda x: (-x[1]["S"], -x[1]["Diff"], -x[1]["Avg"]))
     return result
  
 # --- Gruppenspiele erstellen ---
@@ -897,8 +897,7 @@ def _t_gruppenphase_ui(turnier):
                         "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 3px;font-weight:600;'>S</th>"
                         "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 3px;font-weight:600;'>N</th>"
                         "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 3px;font-weight:600;'>+/-</th>"
-                        "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 3px;font-weight:600;'>Avg</th>"
-                        "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 6px;font-weight:600;'>Pts</th>"
+                        "<th style='font-size:10px;color:#64748b;text-align:center;padding:4px 6px;font-weight:600;'>Avg</th>"
                         "</tr>"
                     )
                     rows = ""
@@ -915,8 +914,7 @@ def _t_gruppenphase_ui(turnier):
                             f"<td style='padding:5px 3px;text-align:center;font-size:12px;color:#1a202c;font-weight:700;'>{s['S']}</td>"
                             f"<td style='padding:5px 3px;text-align:center;font-size:12px;color:#1a202c;font-weight:700;'>{s['N']}</td>"
                             f"<td style='padding:5px 3px;text-align:center;font-size:12px;color:{diff_col};font-weight:600;'>{s['Diff']:+d}</td>"
-                            f"<td style='padding:5px 3px;text-align:center;font-size:12px;color:#6b7280;'>{avg_str}</td>"
-                            f"<td style='padding:5px 6px;text-align:center;font-size:13px;font-weight:900;color:#1a202c;'>{s['Pts']}</td>"
+                            f"<td style='padding:5px 6px;text-align:center;font-size:12px;color:#6b7280;'>{avg_str}</td>"
                             f"</tr>"
                         )
                     st.markdown(
